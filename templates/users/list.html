@@ -1,26 +1,32 @@
 {% extends 'base.html' %}
 
-{% block title %}الموردون{% endblock %}
+{% block title %}المستخدمون{% endblock %}
 
 {% block content %}
-
 <div class="page-header d-flex justify-content-between align-items-center">
     <div>
-        <h4 class="mb-1">الموردون</h4>
-        <p class="text-muted mb-0">إجمالي: {{ total }} مورد</p>
+        <h4 class="mb-1">المستخدمون</h4>
+        <p class="text-muted mb-0">إجمالي: {{ total }} مستخدم</p>
     </div>
-    <a href="{% url 'supplier_add' %}" class="btn btn-primary btn-action">
-        <i class="bi bi-plus-circle me-1"></i> إضافة مورد
+    <a href="{% url 'user_add' %}" class="btn btn-primary btn-action">
+        <i class="bi bi-person-plus me-1"></i> إضافة مستخدم
     </a>
 </div>
 
-<!-- Search -->
 <div class="table-container mb-3">
     <form method="get" class="row g-2 align-items-end">
-        <div class="col-md-8">
+        <div class="col-md-4">
             <label class="form-label text-muted small">بحث</label>
-            <input type="text" name="search" value="{{ search }}"
-                class="form-control" placeholder="ابحث باسم المورد أو الشخص المسؤول...">
+            <input type="text" name="search" value="{{ search }}" class="form-control" placeholder="ابحث باسم المستخدم أو البريد...">
+        </div>
+        <div class="col-md-4">
+            <label class="form-label text-muted small">الدور</label>
+            <select name="role" class="form-select">
+                <option value="">الكل</option>
+                {% for role, label in roles %}
+                <option value="{{ role }}" {% if role == role_filter %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
         </div>
         <div class="col-md-4">
             <button type="submit" class="btn btn-primary w-100">
@@ -30,46 +36,40 @@
     </form>
 </div>
 
-<!-- Table -->
 <div class="table-container">
-    {% if suppliers %}
+    {% if users %}
     <div class="table-responsive">
         <table class="table table-hover align-middle">
             <thead class="table-light">
                 <tr>
-                    <th>م</th>
-                    <th>اسم المورد</th>
-                    <th>الشخص المسؤول</th>
-                    <th>رقم الهاتف</th>
+                    <th>اسم المستخدم</th>
+                    <th>الاسم</th>
                     <th>البريد الإلكتروني</th>
+                    <th>الدور</th>
                     <th>إجراءات</th>
                 </tr>
             </thead>
             <tbody>
-                {% for supplier in suppliers %}
+                {% for user in users %}
                 <tr>
-                    <td class="text-muted small">{{ supplier.id }}</td>
-                    <td><strong>{{ supplier.name }}</strong></td>
-                    <td>{{ supplier.contact_person|default:"—" }}</td>
-                    <td>{{ supplier.phone|default:"—" }}</td>
-                    <td>{{ supplier.email|default:"—" }}</td>
+                    <td>{{ user.username }}</td>
+                    <td>{{ user.get_full_name|default:'—' }}</td>
+                    <td>{{ user.email|default:'—' }}</td>
+                    <td>{{ user.profile.get_role_display }}</td>
                     <td>
-                        <a href="{% url 'supplier_edit' supplier.pk %}"
-                            class="btn btn-sm btn-outline-primary btn-action me-1">
+                        <a href="{% url 'user_edit' user.pk %}" class="btn btn-sm btn-outline-primary btn-action me-1">
                             <i class="bi bi-pencil"></i>
                         </a>
-                        {% if request.user.profile.is_admin %}
-                        <a href="{% url 'supplier_delete' supplier.pk %}"
-                            class="btn btn-sm btn-outline-danger btn-action">
-                            <i class="bi bi-trash"></i>
+                        <a href="{% url 'user_reset_password' user.pk %}" class="btn btn-sm btn-outline-secondary btn-action">
+                            <i class="bi bi-key"></i>
                         </a>
-                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+
     {% if page_obj.has_other_pages %}
     <nav aria-label="pagination">
         <ul class="pagination justify-content-center mt-3">
@@ -91,14 +91,14 @@
         </ul>
     </nav>
     {% endif %}
+
     {% else %}
     <div class="text-center py-5">
-        <div class="fs-1">🚚</div>
-        <h5 class="mt-3">لا يوجد موردون</h5>
-        <p class="text-muted">لم يتم العثور على موردين مطابقين للبحث</p>
-        <a href="{% url 'supplier_add' %}" class="btn btn-primary">إضافة مورد جديد</a>
+        <div class="fs-1">👥</div>
+        <h5 class="mt-3">لا يوجد مستخدمون</h5>
+        <p class="text-muted">أضف مستخدم جديد لبدء العمل</p>
+        <a href="{% url 'user_add' %}" class="btn btn-primary">إضافة مستخدم</a>
     </div>
     {% endif %}
 </div>
-
 {% endblock %}

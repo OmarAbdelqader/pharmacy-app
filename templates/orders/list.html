@@ -102,6 +102,27 @@
             </tbody>
         </table>
     </div>
+    {% if page_obj.has_other_pages %}
+    <nav aria-label="pagination">
+        <ul class="pagination justify-content-center mt-3">
+            <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
+                <a class="page-link" href="?{% if query_string %}{{ query_string }}&{% endif %}page={{ page_obj.previous_page_number }}" aria-label="Previous">
+                    <span aria-hidden="true">&laquo;</span>
+                </a>
+            </li>
+            {% for num in page_obj.paginator.page_range %}
+            <li class="page-item {% if page_obj.number == num %}active{% endif %}">
+                <a class="page-link" href="?{% if query_string %}{{ query_string }}&{% endif %}page={{ num }}">{{ num }}</a>
+            </li>
+            {% endfor %}
+            <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
+                <a class="page-link" href="?{% if query_string %}{{ query_string }}&{% endif %}page={{ page_obj.next_page_number }}" aria-label="Next">
+                    <span aria-hidden="true">&raquo;</span>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    {% endif %}
     {% else %}
     <div class="text-center py-5">
         <div class="fs-1">🛒</div>

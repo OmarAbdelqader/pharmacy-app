@@ -1,5 +1,6 @@
 from django import forms
-from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem, Prescription, DispensingItem
+from django.contrib.auth.models import User
+from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem, Prescription, DispensingItem, UserProfile
 
 
 class MedicineForm(forms.ModelForm):
@@ -157,6 +158,15 @@ class OrderHeaderForm(forms.ModelForm):
 
 
 class OrderItemForm(forms.ModelForm):
+    expiry_date = forms.DateField(
+        required=False,
+        widget=forms.DateInput(attrs={
+            'class': 'form-control',
+            'type': 'month'
+        }),
+        input_formats=['%Y-%m', '%Y-%m-%d']
+    )
+
     class Meta:
         model = OrderItem
         fields = [
@@ -185,10 +195,6 @@ class OrderItemForm(forms.ModelForm):
             'batch_number': forms.TextInput(attrs={
                 'class': 'form-control',
                 'placeholder': 'رقم التشغيلة'
-            }),
-            'expiry_date': forms.DateInput(attrs={
-                'class': 'form-control',
-                'type': 'date'
             }),
         }
         labels = {
@@ -277,3 +283,67 @@ class DispensingItemForm(forms.ModelForm):
             'batch': 'التشغيلة',
             'quantity_dispensed': 'الكمية المصروفة',
         }
+
+
+class UserForm(forms.ModelForm):
+    password = forms.CharField(
+        required=False,
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'كلمة المرور',
+        }),
+        label='كلمة المرور'
+    )
+
+    class Meta:
+        model = User
+        fields = ['username', 'first_name', 'last_name', 'email']
+        widgets = {
+            'username': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'اسم المستخدم'
+            }),
+            'first_name': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'الاسم الأول'
+            }),
+            'last_name': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'اسم العائلة'
+            }),
+            'email': forms.EmailInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'البريد الإلكتروني'
+            }),
+        }
+        labels = {
+            'username': 'اسم المستخدم',
+            'first_name': 'الاسم الأول',
+            'last_name': 'اسم العائلة',
+            'email': 'البريد الإلكتروني',
+            'password': 'كلمة المرور',
+        }
+
+
+class UserProfileForm(forms.ModelForm):
+    class Meta:
+        model = UserProfile
+        fields = ['role']
+        widgets = {
+            'role': forms.Select(attrs={
+                'class': 'form-select'
+            }),
+        }
+        labels = {
+            'role': 'الدور',
+        }
+
+
+class PasswordResetForm(forms.Form):
+    new_password = forms.CharField(
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'كلمة المرور الجديدة'
+        }),
+        label='كلمة المرور الجديدة'
+    )

@@ -3,14 +3,29 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib import messages
 from django.utils import timezone
 from django.db import models
-from django.db.models import Q
+from django.db.models import Q, Sum
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.forms import formset_factory
 from django.http import JsonResponse
 from datetime import timedelta
 from .decorators import login_required_custom, admin_required
-from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem, Prescription, DispensingItem
+from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem, Prescription, DispensingItem, UserProfile
 from .forms import MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm, OrderItemForm, PrescriptionForm, DispensingItemForm
 import json
+
+from django.contrib.auth.models import User
+
+
+def paginate_queryset(request, queryset, per_page=20):
+    paginator = Paginator(queryset, per_page)
+    page = request.GET.get('page')
+    try:
+        page_obj = paginator.page(page)
+    except PageNotAnInteger:
+        page_obj = paginator.page(1)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages)
+    return page_obj
 
 # ─── AUTH ────────────────────────────────────────────────────
 
@@ -91,12 +106,20 @@ def medicine_list(request):
         'category', flat=True
     ).distinct().order_by('category')
 
+    total = medicines.count()
+    page_obj = paginate_queryset(request, medicines)
+    query_params = request.GET.copy()
+    query_params.pop('page', None)
+    query_string = query_params.urlencode()
+
     context = {
-        'medicines': medicines,
+        'medicines': page_obj,
         'search': search,
         'category': category,
         'categories': categories,
-        'total': medicines.count(),
+        'total': total,
+        'page_obj': page_obj,
+        'query_string': query_string,
     }
     return render(request, 'medicines/list.html', context)
 
@@ -168,10 +191,18 @@ def supplier_list(request):
             Q(phone__icontains=search)
         )
 
+    total = suppliers.count()
+    page_obj = paginate_queryset(request, suppliers)
+    query_params = request.GET.copy()
+    query_params.pop('page', None)
+    query_string = query_params.urlencode()
+
     context = {
-        'suppliers': suppliers,
+        'suppliers': page_obj,
         'search': search,
-        'total': suppliers.count(),
+        'total': total,
+        'page_obj': page_obj,
+        'query_string': query_string,
     }
     return render(request, 'suppliers/list.html', context)
 
@@ -258,11 +289,18 @@ def code_list(request):
                 selected_medicine = code_match.medicine
                 codes = MedicineCode.objects.filter(medicine=selected_medicine)
 
+    page_obj = paginate_queryset(request, codes)
+    query_params = request.GET.copy()
+    query_params.pop('page', None)
+    query_string = query_params.urlencode()
+
     context = {
         'medicines': medicines,
-        'codes': codes,
+        'codes': page_obj,
         'selected_medicine': selected_medicine,
         'search': search,
+        'page_obj': page_obj,
+        'query_string': query_string,
     }
     return render(request, 'codes/list.html', context)
 
@@ -375,12 +413,20 @@ def prescription_list(request):
     if date_filter:
         prescriptions = prescriptions.filter(dispensing_date=date_filter)
 
+    total = prescriptions.count()
+    page_obj = paginate_queryset(request, prescriptions)
+    query_params = request.GET.copy()
+    query_params.pop('page', None)
+    query_string = query_params.urlencode()
+
     context = {
-        'prescriptions': prescriptions,
+        'prescriptions': page_obj,
         'search': search,
         'date_filter': date_filter,
-        'total': prescriptions.count(),
+        'total': total,
         'today': timezone.now().date(),
+        'page_obj': page_obj,
+        'query_string': query_string,
     }
     return render(request, 'prescriptions/list.html', context)
 
@@ -600,12 +646,20 @@ def order_list(request):
             Q(supplier_reference__icontains=search)
         )
 
+    total = orders.count()
+    page_obj = paginate_queryset(request, orders)
+    query_params = request.GET.copy()
+    query_params.pop('page', None)
+    query_string = query_params.urlencode()
+
     context = {
-        'orders': orders,
+        'orders': page_obj,
         'status_filter': status_filter,
         'search': search,
-        'total': orders.count(),
+        'total': total,
         'pending_count': OrderHeader.objects.filter(status='Pending').count(),
+        'page_obj': page_obj,
+        'query_string': query_string,
     }
     return render(request, 'orders/list.html', context)
 
@@ -748,36 +802,318 @@ def _create_batch_and_update_stock(item, order):
 
 @login_required_custom
 def report_stock_movement(request):
-    return render(request, 'coming_soon.html', {'page': 'تقرير حركة الأصناف'})
+    today = timezone.now().date()
+    start_date = request.GET.get('from', '')
+    end_date = request.GET.get('to', '')
+    category_filter = request.GET.get('category', '')
+
+    medicines = Medicine.objects.all().order_by('category', 'id')
+    if category_filter:
+        medicines = medicines.filter(category__icontains=category_filter)
+
+    categories = Medicine.objects.values_list('category', flat=True).distinct().order_by('category')
+    rows = []
+
+    for medicine in medicines:
+        purchases_in_range = 0
+        dispensed_in_range = 0
+        opening_stock = 0
+        closing_stock = 0
+
+        if start_date:
+            purchases_in_range = OrderItem.objects.filter(
+                medicine=medicine,
+                order__status='Delivered',
+                order__order_date__gte=start_date,
+                order__order_date__lte=end_date or today
+            ).aggregate(total=Sum('quantity_received'))['total'] or 0
+
+            dispensed_in_range = DispensingItem.objects.filter(
+                medicine=medicine,
+                prescription__dispensing_date__gte=start_date,
+                prescription__dispensing_date__lte=end_date or today
+            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
+
+            purchases_before = OrderItem.objects.filter(
+                medicine=medicine,
+                order__status='Delivered',
+                order__order_date__lt=start_date
+            ).aggregate(total=Sum('quantity_received'))['total'] or 0
+
+            dispensed_before = DispensingItem.objects.filter(
+                medicine=medicine,
+                prescription__dispensing_date__lt=start_date
+            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
+
+            opening_stock = purchases_before - dispensed_before
+            closing_stock = opening_stock + purchases_in_range - dispensed_in_range
+        else:
+            purchases_in_range = OrderItem.objects.filter(
+                medicine=medicine,
+                order__status='Delivered',
+                order__order_date__lte=end_date or today
+            ).aggregate(total=Sum('quantity_received'))['total'] or 0
+
+            dispensed_in_range = DispensingItem.objects.filter(
+                medicine=medicine,
+                prescription__dispensing_date__lte=end_date or today
+            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
+
+            opening_stock = 0
+            closing_stock = opening_stock + purchases_in_range - dispensed_in_range
+
+        if purchases_in_range == 0 and dispensed_in_range == 0:
+            continue
+
+        nearest_batch = medicine.batches.filter(quantity_remaining__gt=0).order_by('expiry_date').first()
+        rows.append({
+            'medicine': medicine,
+            'opening_stock': opening_stock,
+            'purchased': purchases_in_range,
+            'total': opening_stock + purchases_in_range,
+            'dispensed': dispensed_in_range,
+            'closing_stock': closing_stock,
+            'nearest_expiry': nearest_batch.expiry_date if nearest_batch else None,
+            'nearest_batch_number': nearest_batch.batch_number if nearest_batch else '—',
+        })
+
+    context = {
+        'rows': rows,
+        'categories': categories,
+        'category_filter': category_filter,
+        'start_date': start_date,
+        'end_date': end_date,
+    }
+    return render(request, 'reports/stock_movement.html', context)
 
 
 @login_required_custom
 def report_current_stock(request):
-    return render(request, 'coming_soon.html', {'page': 'تقرير المخزون الحالي'})
+    medicines = Medicine.objects.all().order_by('category', 'id')
+    return render(request, 'reports/current_stock.html', {
+        'medicines': medicines,
+    })
 
 
 @login_required_custom
 def report_expiry(request):
-    return render(request, 'coming_soon.html', {'page': 'تقرير انتهاء الصلاحية'})
+    today = timezone.now().date()
+    six_months = today + timedelta(days=180)
+    batches = Batch.objects.filter(
+        expiry_date__gte=today,
+        expiry_date__lte=six_months,
+        quantity_remaining__gt=0
+    ).order_by('expiry_date')
+    return render(request, 'reports/expiry.html', {
+        'batches': batches,
+        'today': today,
+        'six_months': six_months,
+    })
 
 
 @login_required_custom
 def report_under_supply(request):
-    return render(request, 'coming_soon.html', {'page': 'تقرير تحت التوريد'})
+    rows = []
+    for medicine in Medicine.objects.filter(current_stock=0).order_by('category', 'id'):
+        latest_item = OrderItem.objects.filter(medicine=medicine).order_by('-order__order_date', '-order__id').first()
+        if not latest_item or latest_item.quantity_received != 0:
+            continue
+
+        last_successful = OrderItem.objects.filter(
+            medicine=medicine,
+            quantity_received__gt=0
+        ).order_by('-order__order_date', '-order__id').first()
+
+        last_supply_date = last_successful.order.order_date if last_successful else None
+
+        events = []
+        for item in OrderItem.objects.filter(medicine=medicine).select_related('order'):
+            if item.order.order_date:
+                events.append({
+                    'date': item.order.order_date,
+                    'change': item.quantity_received,
+                    'type': 'order',
+                })
+        for item in DispensingItem.objects.filter(medicine=medicine).select_related('prescription'):
+            if item.prescription.dispensing_date:
+                events.append({
+                    'date': item.prescription.dispensing_date,
+                    'change': -item.quantity_dispensed,
+                    'type': 'dispense',
+                })
+
+        events.sort(key=lambda e: (e['date'], 0 if e['type'] == 'order' else 1))
+        running_balance = 0
+        zero_date = None
+        for event in events:
+            running_balance += event['change']
+            if running_balance == 0:
+                zero_date = event['date']
+
+        rows.append({
+            'medicine': medicine,
+            'zero_date': zero_date,
+            'last_supply_date': last_supply_date,
+        })
+    return render(request, 'reports/under_supply.html', {
+        'rows': rows,
+    })
 
 
 @login_required_custom
 def report_low_stock(request):
-    return render(request, 'coming_soon.html', {'page': 'تقرير تحت الحد الأدنى'})
+    category_filter = request.GET.get('category', '')
+    medicines = Medicine.objects.filter(
+        reorder_level__gt=0,
+        current_stock__lte=models.F('reorder_level')
+    ).order_by('category', 'id')
+
+    if category_filter:
+        medicines = medicines.filter(category__icontains=category_filter)
+
+    categories = Medicine.objects.values_list('category', flat=True).distinct().order_by('category')
+    return render(request, 'reports/low_stock.html', {
+        'medicines': medicines,
+        'categories': categories,
+        'category_filter': category_filter,
+    })
 
 
 @login_required_custom
 def report_daily_dispensing(request):
-    return render(request, 'coming_soon.html', {'page': 'تقرير الصرف اليومي'})
+    date_filter = request.GET.get('date', '')
+    today = timezone.now().date()
+    selected_date = date_filter or today
+
+    prescriptions = Prescription.objects.filter(
+        dispensing_date=selected_date
+    ).order_by('prescription_ref')
+
+    return render(request, 'reports/daily_dispensing.html', {
+        'prescriptions': prescriptions,
+        'selected_date': selected_date,
+    })
 
 
 # ─── USERS ───────────────────────────────────────────────────
 
-@login_required_custom
+@admin_required
 def user_list(request):
-    return render(request, 'coming_soon.html', {'page': 'المستخدمون'})
+    search = request.GET.get('search', '')
+    role_filter = request.GET.get('role', '')
+
+    users = User.objects.all().order_by('username')
+
+    if search:
+        users = users.filter(
+            Q(username__icontains=search) |
+            Q(first_name__icontains=search) |
+            Q(last_name__icontains=search) |
+            Q(email__icontains=search)
+        )
+
+    if role_filter:
+        users = users.filter(profile__role=role_filter)
+
+    total = users.count()
+    page_obj = paginate_queryset(request, users)
+    query_params = request.GET.copy()
+    query_params.pop('page', None)
+    query_string = query_params.urlencode()
+
+    context = {
+        'users': page_obj,
+        'page_obj': page_obj,
+        'query_string': query_string,
+        'search': search,
+        'role_filter': role_filter,
+        'roles': UserProfile.ROLE_CHOICES,
+        'total': total,
+    }
+    return render(request, 'users/list.html', context)
+
+
+@admin_required
+def user_add(request):
+    if request.method == 'POST':
+        form = UserForm(request.POST)
+        profile_form = UserProfileForm(request.POST)
+        if form.is_valid() and profile_form.is_valid():
+            user = form.save(commit=False)
+            password = form.cleaned_data.get('password')
+            if password:
+                user.set_password(password)
+            else:
+                user.set_unusable_password()
+            user.save()
+
+            profile = profile_form.save(commit=False)
+            profile.user = user
+            profile.save()
+
+            messages.success(request, f'تم إضافة المستخدم {user.username} بنجاح')
+            return redirect('user_list')
+    else:
+        form = UserForm()
+        profile_form = UserProfileForm()
+
+    return render(request, 'users/form.html', {
+        'form': form,
+        'profile_form': profile_form,
+        'title': 'إضافة مستخدم جديد',
+    })
+
+
+@admin_required
+def user_edit(request, pk):
+    user = get_object_or_404(User, pk=pk)
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+
+    if request.method == 'POST':
+        form = UserForm(request.POST, instance=user)
+        profile_form = UserProfileForm(request.POST, instance=profile)
+        if form.is_valid() and profile_form.is_valid():
+            user = form.save(commit=False)
+            password = form.cleaned_data.get('password')
+            if password:
+                user.set_password(password)
+            user.save()
+
+            profile = profile_form.save(commit=False)
+            profile.user = user
+            profile.save()
+
+            messages.success(request, f'تم تحديث المستخدم {user.username} بنجاح')
+            return redirect('user_list')
+    else:
+        form = UserForm(instance=user)
+        profile_form = UserProfileForm(instance=profile)
+
+    return render(request, 'users/form.html', {
+        'form': form,
+        'profile_form': profile_form,
+        'title': f'تعديل المستخدم: {user.username}',
+        'user_object': user,
+    })
+
+
+@admin_required
+def user_reset_password(request, pk):
+    user = get_object_or_404(User, pk=pk)
+
+    if request.method == 'POST':
+        form = PasswordResetForm(request.POST)
+        if form.is_valid():
+            new_password = form.cleaned_data['new_password']
+            user.set_password(new_password)
+            user.save()
+            messages.success(request, f'تم إعادة تعيين كلمة المرور للمستخدم {user.username} بنجاح')
+            return redirect('user_list')
+    else:
+        form = PasswordResetForm()
+
+    return render(request, 'users/reset_password.html', {
+        'form': form,
+        'title': f'إعادة تعيين كلمة المرور: {user.username}',
+        'user_object': user,
+    })

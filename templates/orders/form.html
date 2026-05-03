@@ -154,32 +154,47 @@
 {% block extra_js %}
 <script>
     // Fetch medicine data when medicine is selected
-    function attachMedicineChangeHandler(row) {
+    function fillMedicineDetails(row) {
         const medicineSelect = row.querySelector('select[name$="-medicine"]');
         const reorderInput = row.querySelector('.reorder-level');
         const stockInput = row.querySelector('.current-stock');
         const qtyInput = row.querySelector('input[name$="-quantity_ordered"]');
 
-        if (medicineSelect) {
-            medicineSelect.addEventListener('change', function() {
-                const medicineId = this.value;
-                if (medicineId) {
-                    fetch(`/api/medicine/${medicineId}/`)
-                        .then(response => response.json())
-                        .then(data => {
-                            reorderInput.value = data.reorder_level;
-                            stockInput.value = data.current_stock;
-                            if (data.suggested_qty > 0) {
-                                qtyInput.value = data.suggested_qty;
-                            }
-                        });
-                } else {
-                    reorderInput.value = '';
-                    stockInput.value = '';
-                    qtyInput.value = '';
-                }
-            });
+        if (!medicineSelect) {
+            return;
         }
+
+        const medicineId = medicineSelect.value;
+        if (medicineId) {
+            fetch(`/api/medicine/${medicineId}/`)
+                .then(response => response.json())
+                .then(data => {
+                    reorderInput.value = data.reorder_level;
+                    stockInput.value = data.current_stock;
+                    if (data.suggested_qty > 0 && !qtyInput.value) {
+                        qtyInput.value = data.suggested_qty;
+                    }
+                });
+        } else {
+            reorderInput.value = '';
+            stockInput.value = '';
+            if (!qtyInput.value) {
+                qtyInput.value = '';
+            }
+        }
+    }
+
+    function attachMedicineChangeHandler(row) {
+        const medicineSelect = row.querySelector('select[name$="-medicine"]');
+        if (!medicineSelect) {
+            return;
+        }
+
+        medicineSelect.addEventListener('change', function() {
+            fillMedicineDetails(row);
+        });
+
+        fillMedicineDetails(row);
     }
 
     // Attach to all existing rows on page load

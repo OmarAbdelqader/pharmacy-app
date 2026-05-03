@@ -127,7 +127,7 @@
                             {% if batch.quantity_remaining > 0 or batch.pk == item.batch.pk %}
                             <option value="{{ batch.pk }}"
                                 {% if batch.pk == item.batch.pk %}selected{% endif %}>
-                                {{ batch.batch_number }} — ينتهي {{ batch.expiry_date }}
+                                {{ batch.batch_number }} — ينتهي {{ batch.expiry_date|date:"m/Y" }}
                             </option>
                             {% endif %}
                             {% endfor %}
@@ -255,10 +255,18 @@ function addItemByCode() {
     const batch = found.batches[0];
 
     // Build batch options
+    function formatExpiryMonthYear(dateString) {
+        const parts = dateString.split('-');
+        if (parts.length >= 2) {
+            return `${parts[1].padStart(2, '0')}/${parts[0]}`;
+        }
+        return dateString;
+    }
+
     let batchOptions = '';
     for (const b of found.batches) {
         batchOptions += `<option value="${b.id}">
-            ${b.batch_number} — ينتهي ${b.expiry_date} (متبقي: ${b.quantity_remaining})
+            ${b.batch_number} — ينتهي ${formatExpiryMonthYear(b.expiry_date)} (متبقي: ${b.quantity_remaining})
         </option>`;
     }
 
