@@ -20,6 +20,7 @@
                     <th>رقم التشغيلة</th>
                     <th>تاريخ الانتهاء</th>
                     <th>المتبقي</th>
+                    <th>متوسط الصنف</th>
                 </tr>
             </thead>
             <tbody>
@@ -29,6 +30,7 @@
                     <td>{{ batch.batch_number|default:'—' }}</td>
                     <td>{{ batch.expiry_date|date:"m/Y" }}</td>
                     <td>{{ batch.quantity_remaining }}</td>
+                    <td>{{ batch.medicine.reorder_level }}</td>
                 </tr>
                 {% endfor %}
             </tbody>

@@ -88,7 +88,7 @@ def dashboard(request):
 @login_required_custom
 def medicine_list(request):
     search = request.GET.get('search', '')
-    category = request.GET.get('category', '')
+    category_filter = request.GET.get('category', '')
 
     medicines = Medicine.objects.all().order_by('id')
 
@@ -99,10 +99,10 @@ def medicine_list(request):
             Q(category__icontains=search)
         )
 
-    if category:
-        medicines = medicines.filter(category__icontains=category)
+    if category_filter:
+        medicines = medicines.filter(category__iexact=category_filter)
 
-    categories = Medicine.objects.values_list(
+    categories = Medicine.objects.exclude(category='').values_list(
         'category', flat=True
     ).distinct().order_by('category')
 
@@ -115,7 +115,7 @@ def medicine_list(request):
     context = {
         'medicines': page_obj,
         'search': search,
-        'category': category,
+        'category_filter': category_filter,
         'categories': categories,
         'total': total,
         'page_obj': page_obj,

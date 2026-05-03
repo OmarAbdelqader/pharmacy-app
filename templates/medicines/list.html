@@ -28,7 +28,7 @@
             <select name="category" class="form-select">
                 <option value="">الكل</option>
                 {% for cat in categories %}
-                <option value="{{ cat }}" {% if cat == category %}selected{% endif %}>
+                <option value="{{ cat }}" {% if cat == category_filter %}selected{% endif %}>
                     {{ cat }}
                 </option>
                 {% endfor %}
