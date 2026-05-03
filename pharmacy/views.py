@@ -395,16 +395,16 @@ def prescription_add(request):
         form = PrescriptionForm(request.POST)
         formset = DispensingItemFormSet(request.POST, prefix='items')
 
-        if form.is_valid() and formset.is_valid():
+        if form.is_valid():
             ref = form.cleaned_data.get('prescription_ref') or (
                 form.cleaned_data.get('prefix_digits', '') +
                 form.cleaned_data.get('suffix_digits', '')
             )
 
-            valid_items = [item_form for item_form in formset 
-                          if item_form.cleaned_data and not item_form.cleaned_data.get('DELETE')]
+            # Check if items were added via JavaScript (from POST data)
+            medicine_ids = request.POST.getlist('item_medicine[]')
             
-            if not valid_items:
+            if not medicine_ids:
                 messages.error(request, 'يجب إضافة صنف واحد على الأقل قبل حفظ التذكرة')
             elif Prescription.objects.filter(prescription_ref=ref).exists():
                 messages.error(request, f'رقم التذكرة "{ref}" مستخدم بالفعل')
@@ -415,25 +415,7 @@ def prescription_add(request):
                 prescription.updated_by = request.user
                 prescription.save()
 
-                for item_form in valid_items:
-                    medicine = item_form.cleaned_data.get('medicine')
-                    batch = item_form.cleaned_data.get('batch')
-                    qty = item_form.cleaned_data.get('quantity_dispensed')
-
-                    if medicine and batch and qty:
-                        DispensingItem.objects.create(
-                            prescription=prescription,
-                            medicine=medicine,
-                            batch=batch,
-                            quantity_dispensed=qty,
-                            created_by=request.user,
-                        )
-                        Batch.objects.filter(pk=batch.pk).update(
-                            quantity_remaining=models.F('quantity_remaining') - qty
-                        )
-                        Medicine.objects.filter(pk=medicine.pk).update(
-                            current_stock=models.F('current_stock') - qty
-                        )
+                _process_dispensing_items(request, prescription)
 
                 messages.success(request, f'تم حفظ التذكرة {prescription.prescription_ref} بنجاح')
                 # Redirect to new prescription with same prefix
