@@ -1,0 +1,48 @@
+# Python
+*.py[cod]
+*$py.class
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+
+# Django
+*.log
+*.pot
+*.pyc
+*.pyo
+*.pyd
+db.sqlite3
+media/
+*.sqlite3
+.env
+
+# Virtual environments
+venv/
+.venv/
+venv_py312/
+ENV/
+env/
+Lib/
+Include/
+Scripts/
+pyvenv.cfg
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Others
+*.swp
+*~

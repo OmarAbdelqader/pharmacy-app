@@ -1,0 +1,111 @@
+{% extends 'base.html' %}
+
+{% block title %}الأصناف{% endblock %}
+
+{% block content %}
+
+<!-- Page header -->
+<div class="page-header d-flex justify-content-between align-items-center">
+    <div>
+        <h4 class="mb-1">الأصناف</h4>
+        <p class="text-muted mb-0">إجمالي: {{ total }} صنف</p>
+    </div>
+    <a href="{% url 'medicine_add' %}" class="btn btn-primary btn-action">
+        <i class="bi bi-plus-circle me-1"></i> إضافة صنف
+    </a>
+</div>
+
+<!-- Search and filter -->
+<div class="table-container mb-3">
+    <form method="get" class="row g-2 align-items-end">
+        <div class="col-md-5">
+            <label class="form-label text-muted small">بحث</label>
+            <input type="text" name="search" value="{{ search }}"
+                class="form-control" placeholder="ابحث باسم الصنف أو المرجع...">
+        </div>
+        <div class="col-md-4">
+            <label class="form-label text-muted small">نوع الصنف</label>
+            <select name="category" class="form-select">
+                <option value="">الكل</option>
+                {% for cat in categories %}
+                <option value="{{ cat }}" {% if cat == category %}selected{% endif %}>
+                    {{ cat }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-3">
+            <button type="submit" class="btn btn-primary w-100">
+                <i class="bi bi-search me-1"></i> بحث
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Table -->
+<div class="table-container">
+    {% if medicines %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>م</th>
+                    <th>اسم الصنف</th>
+                    <th>نوع الصنف</th>
+                    <th>دفتر 118</th>
+                    <th>الوحدة</th>
+                    <th>المخزون</th>
+                    <th>حد الطلب</th>
+                    <th>الحالة</th>
+                    <th>إجراءات</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for medicine in medicines %}
+                <tr>
+                    <td class="text-muted small">{{ medicine.id }}</td>
+                    <td><strong>{{ medicine.name }}</strong></td>
+                    <td>{{ medicine.category|default:"—" }}</td>
+                    <td>{{ medicine.book_reference|default:"—" }}</td>
+                    <td>{{ medicine.unit|default:"—" }}</td>
+                    <td>
+                        <span class="fw-bold {% if medicine.is_low_stock %}text-danger{% else %}text-success{% endif %}">
+                            {{ medicine.current_stock }}
+                        </span>
+                    </td>
+                    <td>{{ medicine.reorder_level }}</td>
+                    <td>
+                        {% if medicine.is_low_stock %}
+                        <span class="badge bg-danger">تحت الحد</span>
+                        {% else %}
+                        <span class="badge bg-success">متوفر</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <a href="{% url 'medicine_edit' medicine.pk %}"
+                            class="btn btn-sm btn-outline-primary btn-action me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        {% if request.user.profile.is_admin %}
+                        <a href="{% url 'medicine_delete' medicine.pk %}"
+                            class="btn btn-sm btn-outline-danger btn-action">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center py-5">
+        <div class="fs-1">💊</div>
+        <h5 class="mt-3">لا توجد أصناف</h5>
+        <p class="text-muted">لم يتم العثور على أصناف مطابقة للبحث</p>
+        <a href="{% url 'medicine_add' %}" class="btn btn-primary">إضافة صنف جديد</a>
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

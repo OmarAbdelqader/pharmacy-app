@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">{{ title }}</h4>
+    <a href="{% url 'medicine_list' %}" class="btn btn-outline-secondary btn-action">
+        <i class="bi bi-arrow-right me-1"></i> العودة
+    </a>
+</div>
+
+<div class="table-container">
+    <form method="post">
+        {% csrf_token %}
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label">{{ form.name.label }} <span class="text-danger">*</span></label>
+                {{ form.name }}
+                {% if form.name.errors %}
+                <div class="text-danger small mt-1">{{ form.name.errors }}</div>
+                {% endif %}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">{{ form.category.label }}</label>
+                {{ form.category }}
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">{{ form.book_reference.label }}</label>
+                {{ form.book_reference }}
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">{{ form.unit.label }}</label>
+                {{ form.unit }}
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">{{ form.default_dispense_qty.label }}</label>
+                {{ form.default_dispense_qty }}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">{{ form.reorder_level.label }}</label>
+                {{ form.reorder_level }}
+                <div class="form-text">الكمية التي عندها يجب إعادة الطلب</div>
+            </div>
+            {% if medicine %}
+            <div class="col-md-6">
+                <label class="form-label">المخزون الحالي</label>
+                <input type="text" class="form-control" value="{{ medicine.current_stock }}" disabled>
+                <div class="form-text">يتم تحديثه تلقائياً عند الاستلام والصرف</div>
+            </div>
+            {% endif %}
+            <div class="col-12">
+                <label class="form-label">{{ form.description.label }}</label>
+                {{ form.description }}
+            </div>
+        </div>
+
+        <hr class="my-4">
+
+        <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary px-4">
+                <i class="bi bi-check-circle me-1"></i> حفظ
+            </button>
+            <a href="{% url 'medicine_list' %}" class="btn btn-outline-secondary px-4">
+                إلغاء
+            </a>
+        </div>
+    </form>
+</div>
+
+{% endblock %}

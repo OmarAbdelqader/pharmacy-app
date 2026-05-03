@@ -1,0 +1,314 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .item-row {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 12px 15px;
+        margin-bottom: 8px;
+        border: 1px solid #dee2e6;
+    }
+    .item-row:hover {
+        border-color: #0d6efd;
+    }
+    .code-input {
+        width: 120px;
+    }
+    #prefix-input {
+        width: 80px;
+        text-align: center;
+        font-size: 1.3rem;
+        font-weight: bold;
+    }
+    #suffix-input {
+        width: 80px;
+        text-align: center;
+        font-size: 1.3rem;
+        font-weight: bold;
+    }
+    .ref-display {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #0d6efd;
+        min-width: 100px;
+        text-align: center;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">{{ title }}</h4>
+    <a href="{% url 'prescription_list' %}" class="btn btn-outline-secondary btn-action">
+        <i class="bi bi-arrow-right me-1"></i> العودة
+    </a>
+</div>
+
+<form method="post" id="prescriptionForm">
+    {% csrf_token %}
+
+    <!-- Prescription Header -->
+    <div class="table-container mb-3">
+        <h6 class="mb-3 text-primary">
+            <i class="bi bi-info-circle me-2"></i>بيانات التذكرة
+        </h6>
+        <div class="row g-3 align-items-end">
+            <!-- Prefix -->
+            <div class="col-auto">
+                <label class="form-label">{{ form.prefix_digits.label }}</label>
+                <input type="text" id="prefix-input" name="prefix_digits"
+                    class="form-control"
+                    value="{{ form.prefix_digits.value|default:'' }}"
+                    maxlength="3" placeholder="000">
+            </div>
+
+            <!-- Separator -->
+            <div class="col-auto pb-2">
+                <span class="fs-4 fw-bold text-muted">—</span>
+            </div>
+
+            <!-- Suffix -->
+            <div class="col-auto">
+                <label class="form-label">{{ form.suffix_digits.label }}</label>
+                <input type="text" id="suffix-input" name="suffix_digits"
+                    class="form-control"
+                    value="{{ form.suffix_digits.value|default:'' }}"
+                    maxlength="3" placeholder="000">
+            </div>
+
+            <!-- Full ref display -->
+            <div class="col-auto pb-2">
+                <span class="text-muted small me-2">رقم التذكرة:</span>
+                <span class="ref-display" id="ref-display">
+                    {{ form.prefix_digits.value|default:'---' }}{{ form.suffix_digits.value|default:'---' }}
+                </span>
+            </div>
+
+            <!-- Date -->
+            <div class="col-md-3">
+                <label class="form-label">{{ form.dispensing_date.label }}</label>
+                {{ form.dispensing_date }}
+            </div>
+        </div>
+    </div>
+
+    <!-- Dispensing Items -->
+    <div class="table-container mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h6 class="mb-0 text-primary">
+                <i class="bi bi-capsule me-2"></i>الأصناف المصروفة
+            </h6>
+            <div class="d-flex gap-2 align-items-center">
+                <input type="text" id="code-search" class="form-control code-input"
+                    placeholder="أدخل الكود" autocomplete="off">
+                <button type="button" class="btn btn-success btn-sm" id="addByCode">
+                    <i class="bi bi-plus-circle me-1"></i> إضافة
+                </button>
+            </div>
+        </div>
+
+        <!-- Items container -->
+        <div id="items-container">
+            {% if existing_items %}
+            {% for item in existing_items %}
+            <div class="item-row">
+                <div class="row g-2 align-items-center">
+                    <div class="col-md-4">
+                        <span class="fw-bold">{{ item.medicine.name }}</span>
+                        <input type="hidden" name="item_medicine[]" value="{{ item.medicine.pk }}">
+                    </div>
+                    <div class="col-md-3">
+                        <select name="item_batch[]" class="form-select form-select-sm">
+                            {% for batch in item.medicine.batches.all %}
+                            {% if batch.quantity_remaining > 0 or batch.pk == item.batch.pk %}
+                            <option value="{{ batch.pk }}"
+                                {% if batch.pk == item.batch.pk %}selected{% endif %}>
+                                {{ batch.batch_number }} — ينتهي {{ batch.expiry_date }}
+                            </option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <input type="number" name="item_quantity[]"
+                            class="form-control form-control-sm"
+                            value="{{ item.quantity_dispensed }}" min="1">
+                    </div>
+                    <div class="col-md-2 text-muted small">
+                        متبقي: {{ item.batch.quantity_remaining }}
+                    </div>
+                    <div class="col-md-1 text-center">
+                        <button type="button" class="btn btn-sm btn-outline-danger remove-item">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div id="empty-message" class="text-center py-4 text-muted">
+                <i class="bi bi-capsule fs-3"></i>
+                <p class="mt-2">أدخل كود الصنف أعلاه لإضافته</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary px-4">
+            <i class="bi bi-check-circle me-1"></i> حفظ التذكرة
+        </button>
+        <a href="{% url 'prescription_list' %}" class="btn btn-outline-secondary px-4">
+            إلغاء
+        </a>
+    </div>
+</form>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Medicines data from Django
+const medicines = JSON.parse('{{ medicines_json|safe }}');
+
+// Update ref display
+function updateRefDisplay() {
+    const prefix = document.getElementById('prefix-input').value;
+    const suffix = document.getElementById('suffix-input').value;
+    const display = document.getElementById('ref-display');
+    display.textContent = (prefix || '---') + (suffix || '---');
+}
+
+document.getElementById('prefix-input').addEventListener('input', function() {
+    updateRefDisplay();
+    if (this.value.length === 3) {
+        document.getElementById('suffix-input').focus();
+    }
+});
+
+document.getElementById('suffix-input').addEventListener('input', function() {
+    updateRefDisplay();
+    if (this.value.length === 3) {
+        document.getElementById('code-search').focus();
+    }
+});
+
+// Initialize display on page load
+updateRefDisplay();
+
+// Auto focus suffix if prefix already filled
+window.addEventListener('load', function() {
+    const prefixInput = document.querySelector('input[name="prefix_digits"]');
+    const suffixInput = document.querySelector('input[name="suffix_digits"]');
+    if (prefixInput.value.length === 3) {
+        suffixInput.focus();
+    }
+});
+
+// Add item by code
+document.getElementById('addByCode').addEventListener('click', addItemByCode);
+document.getElementById('code-search').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        addItemByCode();
+    }
+});
+
+function addItemByCode() {
+    const code = document.getElementById('code-search').value.trim();
+    if (!code) return;
+
+    // Find medicine by code
+    let found = null;
+    for (const medicine of medicines) {
+        if (medicine.codes.includes(code) ||
+            medicine.id.toString() === code) {
+            found = medicine;
+            break;
+        }
+    }
+
+    if (!found) {
+        alert('الكود غير موجود. يرجى التحقق والمحاولة مرة أخرى.');
+        return;
+    }
+
+    if (found.batches.length === 0) {
+        alert('لا يوجد مخزون لهذا الصنف.');
+        return;
+    }
+
+    // Remove empty message
+    const emptyMsg = document.getElementById('empty-message');
+    if (emptyMsg) emptyMsg.remove();
+
+    // Get FEFO batch (first in list — already sorted by expiry)
+    const batch = found.batches[0];
+
+    // Build batch options
+    let batchOptions = '';
+    for (const b of found.batches) {
+        batchOptions += `<option value="${b.id}">
+            ${b.batch_number} — ينتهي ${b.expiry_date} (متبقي: ${b.quantity_remaining})
+        </option>`;
+    }
+
+    // Create row
+    const row = document.createElement('div');
+    row.className = 'item-row';
+    row.innerHTML = `
+        <div class="row g-2 align-items-center">
+            <div class="col-md-4">
+                <span class="fw-bold">${found.name}</span>
+                <input type="hidden" name="item_medicine[]" value="${found.id}">
+            </div>
+            <div class="col-md-3">
+                <select name="item_batch[]" class="form-select form-select-sm">
+                    ${batchOptions}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <input type="number" name="item_quantity[]"
+                    class="form-control form-control-sm"
+                    value="${found.default_qty}" min="1">
+            </div>
+            <div class="col-md-2 text-muted small">
+                متبقي: ${batch.quantity_remaining}
+            </div>
+            <div class="col-md-1 text-center">
+                <button type="button" class="btn btn-sm btn-outline-danger remove-item">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('items-container').appendChild(row);
+
+    // Clear code input and refocus
+    document.getElementById('code-search').value = '';
+    document.getElementById('code-search').focus();
+}
+
+// Remove item
+document.getElementById('items-container').addEventListener('click', function(e) {
+    const btn = e.target.closest('.remove-item');
+    if (btn) {
+        btn.closest('.item-row').remove();
+        if (document.querySelectorAll('.item-row').length === 0) {
+            const container = document.getElementById('items-container');
+            container.innerHTML = `
+                <div id="empty-message" class="text-center py-4 text-muted">
+                    <i class="bi bi-capsule fs-3"></i>
+                    <p class="mt-2">أدخل كود الصنف أعلاه لإضافته</p>
+                </div>`;
+        }
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,214 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .formset-row {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 10px;
+        border: 1px solid #dee2e6;
+    }
+    .formset-row:hover {
+        border-color: #0d6efd;
+    }
+    .delete-row {
+        cursor: pointer;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">{{ title }}</h4>
+    <a href="{% url 'order_list' %}" class="btn btn-outline-secondary btn-action">
+        <i class="bi bi-arrow-right me-1"></i> العودة
+    </a>
+</div>
+
+<form method="post" id="orderForm">
+    {% csrf_token %}
+
+    <!-- Order Header -->
+    <div class="table-container mb-3">
+        <h6 class="mb-3 text-primary">
+            <i class="bi bi-info-circle me-2"></i>بيانات الطلب
+        </h6>
+        <div class="row g-3">
+            {% if order %}
+            <div class="col-md-2">
+                <label class="form-label">رقم الطلب</label>
+                <input type="text" class="form-control" value="{{ order.po_number }}" disabled>
+            </div>
+            {% endif %}
+            <div class="col-md-{% if order %}4{% else %}6{% endif %}">
+                <label class="form-label">{{ form.supplier.label }} <span class="text-danger">*</span></label>
+                {{ form.supplier }}
+                {% if form.supplier.errors %}
+                <div class="text-danger small mt-1">{{ form.supplier.errors }}</div>
+                {% endif %}
+            </div>
+            <div class="col-md-{% if order %}3{% else %}6{% endif %}">
+                <label class="form-label">{{ form.supplier_reference.label }}</label>
+                {{ form.supplier_reference }}
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">{{ form.order_date.label }} <span class="text-danger">*</span></label>
+                {{ form.order_date }}
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">{{ form.delivery_date.label }}</label>
+                {{ form.delivery_date }}
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">{{ form.status.label }} <span class="text-danger">*</span></label>
+                {{ form.status }}
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">{{ form.received_by.label }}</label>
+                {{ form.received_by }}
+            </div>
+            <div class="col-12">
+                <label class="form-label">{{ form.notes.label }}</label>
+                {{ form.notes }}
+            </div>
+        </div>
+    </div>
+
+    <!-- Order Items -->
+    <div class="table-container mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h6 class="mb-0 text-primary">
+                <i class="bi bi-list-ul me-2"></i>أصناف الطلب
+            </h6>
+            <button type="button" class="btn btn-success btn-sm" id="addItem">
+                <i class="bi bi-plus-circle me-1"></i> إضافة صنف
+            </button>
+        </div>
+
+        {{ formset.management_form }}
+
+        <div id="formset-container">
+            {% for item_form in formset %}
+            <div class="formset-row">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-3">
+                        <label class="form-label small">{{ item_form.medicine.label }}</label>
+                        {{ item_form.medicine }}
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label small">متوسط الصنف</label>
+                        <input type="text" class="form-control reorder-level" disabled>
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label small">الرصيد الحالي</label>
+                        <input type="text" class="form-control current-stock" disabled>
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label small">{{ item_form.quantity_ordered.label }}</label>
+                        {{ item_form.quantity_ordered }}
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label small">{{ item_form.quantity_received.label }}</label>
+                        {{ item_form.quantity_received }}
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label small">{{ item_form.unit_cost.label }}</label>
+                        {{ item_form.unit_cost }}
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small">{{ item_form.batch_number.label }}</label>
+                        {{ item_form.batch_number }}
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label small">{{ item_form.expiry_date.label }}</label>
+                        {{ item_form.expiry_date }}
+                    </div>
+                    <div class="col-md-1 text-center">
+                        <label class="form-label small d-block">حذف</label>
+                        {{ item_form.DELETE }}
+                    </div>
+                </div>
+                {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary px-4">
+            <i class="bi bi-check-circle me-1"></i> حفظ الطلب
+        </button>
+        <a href="{% url 'order_list' %}" class="btn btn-outline-secondary px-4">
+            إلغاء
+        </a>
+    </div>
+</form>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Fetch medicine data when medicine is selected
+    function attachMedicineChangeHandler(row) {
+        const medicineSelect = row.querySelector('select[name$="-medicine"]');
+        const reorderInput = row.querySelector('.reorder-level');
+        const stockInput = row.querySelector('.current-stock');
+        const qtyInput = row.querySelector('input[name$="-quantity_ordered"]');
+
+        if (medicineSelect) {
+            medicineSelect.addEventListener('change', function() {
+                const medicineId = this.value;
+                if (medicineId) {
+                    fetch(`/api/medicine/${medicineId}/`)
+                        .then(response => response.json())
+                        .then(data => {
+                            reorderInput.value = data.reorder_level;
+                            stockInput.value = data.current_stock;
+                            if (data.suggested_qty > 0) {
+                                qtyInput.value = data.suggested_qty;
+                            }
+                        });
+                } else {
+                    reorderInput.value = '';
+                    stockInput.value = '';
+                    qtyInput.value = '';
+                }
+            });
+        }
+    }
+
+    // Attach to all existing rows on page load
+    document.querySelectorAll('.formset-row').forEach(row => {
+        attachMedicineChangeHandler(row);
+    });
+
+    // Add new item row dynamically
+    document.getElementById('addItem').addEventListener('click', function() {
+        const container = document.getElementById('formset-container');
+        const totalForms = document.getElementById('id_items-TOTAL_FORMS');
+        const formNum = parseInt(totalForms.value);
+
+        const firstRow = container.querySelector('.formset-row');
+        const newRow = firstRow.cloneNode(true);
+
+        newRow.innerHTML = newRow.innerHTML.replace(/items-\d+/g, `items-${formNum}`);
+
+        newRow.querySelectorAll('input:not([type=hidden])').forEach(input => {
+            if (input.type !== 'checkbox') input.value = '';
+            else input.checked = false;
+        });
+        newRow.querySelectorAll('select').forEach(select => {
+            select.selectedIndex = 0;
+        });
+
+        container.appendChild(newRow);
+        attachMedicineChangeHandler(newRow);
+        totalForms.value = formNum + 1;
+    });
+</script>
+{% endblock %}

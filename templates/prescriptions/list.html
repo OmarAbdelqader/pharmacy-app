@@ -1,0 +1,101 @@
+{% extends 'base.html' %}
+
+{% block title %}التذاكر{% endblock %}
+
+{% block content %}
+
+<div class="page-header d-flex justify-content-between align-items-center">
+    <div>
+        <h4 class="mb-1">التذاكر</h4>
+        <p class="text-muted mb-0">إجمالي: {{ total }} تذكرة</p>
+    </div>
+    <a href="{% url 'prescription_add' %}" class="btn btn-primary btn-action">
+        <i class="bi bi-plus-circle me-1"></i> تذكرة جديدة
+    </a>
+</div>
+
+<!-- Search and filter -->
+<div class="table-container mb-3">
+    <form method="get" class="row g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label text-muted small">بحث برقم التذكرة</label>
+            <input type="text" name="search" value="{{ search }}"
+                class="form-control" placeholder="أدخل رقم التذكرة...">
+        </div>
+        <div class="col-md-4">
+            <label class="form-label text-muted small">تصفية بالتاريخ</label>
+            <input type="date" name="date" value="{{ date_filter }}" class="form-control">
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100">
+                <i class="bi bi-search me-1"></i> بحث
+            </button>
+        </div>
+        <div class="col-md-2">
+            <a href="{% url 'prescription_list' %}" class="btn btn-outline-secondary w-100">
+                إعادة تعيين
+            </a>
+        </div>
+    </form>
+</div>
+
+<!-- Table -->
+<div class="table-container">
+    {% if prescriptions %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>رقم التذكرة</th>
+                    <th>تاريخ الصرف</th>
+                    <th>عدد الأصناف</th>
+                    <th>أضيف بواسطة</th>
+                    <th>إجراءات</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for prescription in prescriptions %}
+                <tr>
+                    <td><strong>{{ prescription.prescription_ref }}</strong></td>
+                    <td>
+                        {{ prescription.dispensing_date }}
+                        {% if prescription.dispensing_date == today %}
+                        <span class="badge bg-success me-1">اليوم</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="badge bg-primary">
+                            {{ prescription.items.count }} صنف
+                        </span>
+                    </td>
+                    <td class="text-muted small">
+                        {{ prescription.created_by|default:"—" }}
+                    </td>
+                    <td>
+                        <a href="{% url 'prescription_edit' prescription.pk %}"
+                            class="btn btn-sm btn-outline-primary btn-action me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        {% if request.user.profile.is_admin %}
+                        <a href="{% url 'prescription_delete' prescription.pk %}"
+                            class="btn btn-sm btn-outline-danger btn-action">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center py-5">
+        <div class="fs-1">📋</div>
+        <h5 class="mt-3">لا توجد تذاكر</h5>
+        <p class="text-muted">لم يتم العثور على تذاكر مطابقة</p>
+        <a href="{% url 'prescription_add' %}" class="btn btn-primary">إضافة تذكرة جديدة</a>
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}

@@ -1,0 +1,147 @@
+{% extends 'base.html' %}
+
+{% block title %}القائمة الرئيسية{% endblock %}
+
+{% block content %}
+
+<!-- Page header -->
+<div class="page-header d-flex justify-content-between align-items-center">
+    <div>
+        <h4 class="mb-1">القائمة الرئيسية</h4>
+        <p class="text-muted mb-0">مرحباً {{ request.user.get_full_name|default:request.user.username }} 👋</p>
+    </div>
+    <div class="text-muted">
+        <i class="bi bi-calendar3"></i> {{ today }}
+    </div>
+</div>
+
+<!-- Stats row -->
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="card stat-card h-100 border-start border-primary border-4">
+            <div class="card-body">
+                <div class="text-muted small">إجمالي الأصناف</div>
+                <div class="fs-2 fw-bold text-primary">{{ total_medicines }}</div>
+                <div class="text-muted small"><i class="bi bi-capsule"></i> صنف مسجل</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card h-100 border-start border-danger border-4">
+            <div class="card-body">
+                <div class="text-muted small">تحت الحد الأدنى</div>
+                <div class="fs-2 fw-bold text-danger">{{ low_stock_count }}</div>
+                <div class="text-muted small">
+                    <i class="bi bi-exclamation-triangle"></i> يحتاج إعادة طلب
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card h-100 border-start border-warning border-4">
+            <div class="card-body">
+                <div class="text-muted small">تنتهي خلال 6 أشهر</div>
+                <div class="fs-2 fw-bold text-warning">{{ expiring_soon_count }}</div>
+                <div class="text-muted small">
+                    <i class="bi bi-calendar-x"></i> تشغيلة
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card h-100 border-start border-success border-4">
+            <div class="card-body">
+                <div class="text-muted small">تذاكر اليوم</div>
+                <div class="fs-2 fw-bold text-success">{{ today_prescriptions }}</div>
+                <div class="text-muted small">
+                    <i class="bi bi-file-medical"></i> تذكرة
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Navigation cards -->
+<div class="row g-3">
+
+    <!-- الأصناف -->
+    <div class="col-6 col-md-4 col-lg-2">
+        <a href="{% url 'medicine_list' %}" class="nav-card card h-100 text-center p-3">
+            <div class="nav-card-icon text-primary">💊</div>
+            <div class="fw-bold">الأصناف</div>
+        </a>
+    </div>
+
+    <!-- الموردون -->
+    <div class="col-6 col-md-4 col-lg-2">
+        <a href="{% url 'supplier_list' %}" class="nav-card card h-100 text-center p-3">
+            <div class="nav-card-icon text-info">🚚</div>
+            <div class="fw-bold">الموردون</div>
+        </a>
+    </div>
+
+    <!-- الأكواد -->
+    <div class="col-6 col-md-4 col-lg-2">
+        <a href="{% url 'code_list' %}" class="nav-card card h-100 text-center p-3">
+            <div class="nav-card-icon text-secondary">🔢</div>
+            <div class="fw-bold">الأكواد</div>
+        </a>
+    </div>
+
+    <!-- التذاكر -->
+    <div class="col-6 col-md-4 col-lg-2">
+        <a href="{% url 'prescription_list' %}" class="nav-card card h-100 text-center p-3">
+            <div class="nav-card-icon text-success">📋</div>
+            <div class="fw-bold">التذاكر</div>
+        </a>
+    </div>
+
+    <!-- طلبات الشراء -->
+    <div class="col-6 col-md-4 col-lg-2">
+        <a href="{% url 'order_list' %}" class="nav-card card h-100 text-center p-3">
+            <div class="nav-card-icon text-warning">🛒</div>
+            <div class="fw-bold">طلبات الشراء</div>
+        </a>
+    </div>
+
+    <!-- التقارير -->
+    <div class="col-6 col-md-4 col-lg-2">
+        <a href="{% url 'report_current_stock' %}" class="nav-card card h-100 text-center p-3">
+            <div class="nav-card-icon text-danger">📊</div>
+            <div class="fw-bold">التقارير</div>
+        </a>
+    </div>
+
+</div>
+
+<!-- Alerts row -->
+{% if low_stock_count > 0 or expiring_soon_count > 0 %}
+<div class="row g-3 mt-2">
+    {% if low_stock_count > 0 %}
+    <div class="col-md-6">
+        <div class="alert alert-danger alert-badge d-flex align-items-center">
+            <i class="bi bi-exclamation-triangle-fill fs-4 me-3"></i>
+            <div>
+                <strong>تنبيه المخزون</strong><br>
+                يوجد {{ low_stock_count }} صنف تحت الحد الأدنى
+                <a href="{% url 'report_low_stock' %}" class="alert-link me-2">عرض التفاصيل</a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    {% if expiring_soon_count > 0 %}
+    <div class="col-md-6">
+        <div class="alert alert-warning alert-badge d-flex align-items-center">
+            <i class="bi bi-calendar-x-fill fs-4 me-3"></i>
+            <div>
+                <strong>تنبيه انتهاء الصلاحية</strong><br>
+                يوجد {{ expiring_soon_count }} تشغيلة تنتهي خلال 6 أشهر
+                <a href="{% url 'report_expiry' %}" class="alert-link me-2">عرض التفاصيل</a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

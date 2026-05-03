@@ -1,0 +1,115 @@
+{% extends 'base.html' %}
+
+{% block title %}طلبات الشراء{% endblock %}
+
+{% block content %}
+
+<div class="page-header d-flex justify-content-between align-items-center">
+    <div>
+        <h4 class="mb-1">طلبات الشراء</h4>
+        <p class="text-muted mb-0">
+            إجمالي: {{ total }} طلب
+            {% if pending_count > 0 %}
+            — <span class="text-warning fw-bold">{{ pending_count }} قيد الانتظار</span>
+            {% endif %}
+        </p>
+    </div>
+    <a href="{% url 'order_add' %}" class="btn btn-primary btn-action">
+        <i class="bi bi-plus-circle me-1"></i> طلب جديد
+    </a>
+</div>
+
+<!-- Search and filter -->
+<div class="table-container mb-3">
+    <form method="get" class="row g-2 align-items-end">
+        <div class="col-md-5">
+            <label class="form-label text-muted small">بحث</label>
+            <input type="text" name="search" value="{{ search }}"
+                class="form-control" placeholder="ابحث برقم الطلب أو المورد...">
+        </div>
+        <div class="col-md-4">
+            <label class="form-label text-muted small">حالة الطلب</label>
+            <select name="status" class="form-select">
+                <option value="">الكل</option>
+                <option value="Pending" {% if status_filter == 'Pending' %}selected{% endif %}>
+                    قيد الانتظار
+                </option>
+                <option value="Delivered" {% if status_filter == 'Delivered' %}selected{% endif %}>
+                    تم التسليم
+                </option>
+                <option value="Cancelled" {% if status_filter == 'Cancelled' %}selected{% endif %}>
+                    ملغي
+                </option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <button type="submit" class="btn btn-primary w-100">
+                <i class="bi bi-search me-1"></i> بحث
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Table -->
+<div class="table-container">
+    {% if orders %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>رقم الطلب</th>
+                    <th>المورد</th>
+                    <th>رقم مرجع المورد</th>
+                    <th>تاريخ الطلب</th>
+                    <th>تاريخ الاستلام</th>
+                    <th>الحالة</th>
+                    <th>الصيدلي المستلم</th>
+                    <th>إجراءات</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for order in orders %}
+                <tr>
+                    <td><strong>{{ order.po_number }}</strong></td>
+                    <td>{{ order.supplier.name }}</td>
+                    <td>{{ order.supplier_reference|default:"—" }}</td>
+                    <td>{{ order.order_date }}</td>
+                    <td>{{ order.delivery_date|default:"—" }}</td>
+                    <td>
+                        {% if order.status == 'Pending' %}
+                        <span class="badge bg-warning text-dark">قيد الانتظار</span>
+                        {% elif order.status == 'Delivered' %}
+                        <span class="badge bg-success">تم التسليم</span>
+                        {% elif order.status == 'Cancelled' %}
+                        <span class="badge bg-danger">ملغي</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ order.received_by|default:"—" }}</td>
+                    <td>
+                        <a href="{% url 'order_edit' order.pk %}"
+                            class="btn btn-sm btn-outline-primary btn-action me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        {% if request.user.profile.is_admin %}
+                        <a href="{% url 'order_delete' order.pk %}"
+                            class="btn btn-sm btn-outline-danger btn-action">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center py-5">
+        <div class="fs-1">🛒</div>
+        <h5 class="mt-3">لا توجد طلبات شراء</h5>
+        <p class="text-muted">لم يتم العثور على طلبات مطابقة</p>
+        <a href="{% url 'order_add' %}" class="btn btn-primary">إنشاء طلب جديد</a>
+    </div>
+    {% endif %}
+</div>
+
+{% endblock %}
