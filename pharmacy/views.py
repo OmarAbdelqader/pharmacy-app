@@ -401,7 +401,12 @@ def prescription_add(request):
                 form.cleaned_data.get('suffix_digits', '')
             )
 
-            if Prescription.objects.filter(prescription_ref=ref).exists():
+            valid_items = [item_form for item_form in formset 
+                          if item_form.cleaned_data and not item_form.cleaned_data.get('DELETE')]
+            
+            if not valid_items:
+                messages.error(request, 'يجب إضافة صنف واحد على الأقل قبل حفظ التذكرة')
+            elif Prescription.objects.filter(prescription_ref=ref).exists():
                 messages.error(request, f'رقم التذكرة "{ref}" مستخدم بالفعل')
             else:
                 prescription = form.save(commit=False)
@@ -410,26 +415,25 @@ def prescription_add(request):
                 prescription.updated_by = request.user
                 prescription.save()
 
-                for item_form in formset:
-                    if item_form.cleaned_data and not item_form.cleaned_data.get('DELETE'):
-                        medicine = item_form.cleaned_data.get('medicine')
-                        batch = item_form.cleaned_data.get('batch')
-                        qty = item_form.cleaned_data.get('quantity_dispensed')
+                for item_form in valid_items:
+                    medicine = item_form.cleaned_data.get('medicine')
+                    batch = item_form.cleaned_data.get('batch')
+                    qty = item_form.cleaned_data.get('quantity_dispensed')
 
-                        if medicine and batch and qty:
-                            DispensingItem.objects.create(
-                                prescription=prescription,
-                                medicine=medicine,
-                                batch=batch,
-                                quantity_dispensed=qty,
-                                created_by=request.user,
-                            )
-                            Batch.objects.filter(pk=batch.pk).update(
-                                quantity_remaining=models.F('quantity_remaining') - qty
-                            )
-                            Medicine.objects.filter(pk=medicine.pk).update(
-                                current_stock=models.F('current_stock') - qty
-                            )
+                    if medicine and batch and qty:
+                        DispensingItem.objects.create(
+                            prescription=prescription,
+                            medicine=medicine,
+                            batch=batch,
+                            quantity_dispensed=qty,
+                            created_by=request.user,
+                        )
+                        Batch.objects.filter(pk=batch.pk).update(
+                            quantity_remaining=models.F('quantity_remaining') - qty
+                        )
+                        Medicine.objects.filter(pk=medicine.pk).update(
+                            current_stock=models.F('current_stock') - qty
+                        )
 
                 messages.success(request, f'تم حفظ التذكرة {prescription.prescription_ref} بنجاح')
                 # Redirect to new prescription with same prefix
@@ -448,6 +452,7 @@ def prescription_add(request):
         'title': 'إضافة تذكرة جديدة',
         'today': today,
         'last_prefix': last_prefix,
+        'medicines_json': _get_medicines_json(),
     })
 
 
