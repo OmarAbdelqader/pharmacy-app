@@ -205,6 +205,10 @@ updateRefDisplay();
 window.addEventListener('load', function() {
     const prefixInput = document.querySelector('input[name="prefix_digits"]');
     const suffixInput = document.querySelector('input[name="suffix_digits"]');
+    
+    // Clear suffix field on page load
+    suffixInput.value = '';
+    
     if (prefixInput.value.length === 3) {
         suffixInput.focus();
     }
