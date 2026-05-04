@@ -10,7 +10,7 @@ from django.http import JsonResponse
 from datetime import timedelta
 from .decorators import login_required_custom, admin_required
 from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem, Prescription, DispensingItem, UserProfile
-from .forms import MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm, OrderItemForm, PrescriptionForm, DispensingItemForm
+from .forms import MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm, OrderItemForm, PrescriptionForm, DispensingItemForm, UserForm, UserProfileForm, PasswordResetForm
 import json
 
 from django.views.decorators.csrf import csrf_exempt
