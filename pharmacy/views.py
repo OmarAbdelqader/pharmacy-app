@@ -671,6 +671,7 @@ def order_add(request):
     print(f"Request method: {request.method}")
     if request.method == 'POST':
         print("POST request received for order_add")
+        print(f"POST data: {request.POST}")
         form = OrderHeaderForm(request.POST)
         formset = OrderItemFormSet(request.POST, prefix='items')
 
