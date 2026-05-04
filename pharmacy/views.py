@@ -669,6 +669,7 @@ def order_add(request):
     OrderItemFormSet = formset_factory(OrderItemForm, extra=1, can_delete=True)
 
     if request.method == 'POST':
+        print("POST request received for order_add")
         form = OrderHeaderForm(request.POST)
         formset = OrderItemFormSet(request.POST, prefix='items')
 
