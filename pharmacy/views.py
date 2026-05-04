@@ -672,30 +672,35 @@ def order_add(request):
     print(f"Request method: {request.method}")
     if request.method == 'POST':
         print("POST request received for order_add")
-        print(f"POST data: {request.POST}")
-        form = OrderHeaderForm(request.POST)
-        formset = OrderItemFormSet(request.POST, prefix='items')
+        print(f"POST data keys: {list(request.POST.keys())}")
+        try:
+            form = OrderHeaderForm(request.POST)
+            formset = OrderItemFormSet(request.POST, prefix='items')
 
-        if form.is_valid() and formset.is_valid():
-            # Save order header
-            order = form.save(commit=False)
-            order.created_by = request.user
-            order.updated_by = request.user
-            order.save()
+            if form.is_valid() and formset.is_valid():
+                # Save order header
+                order = form.save(commit=False)
+                order.created_by = request.user
+                order.updated_by = request.user
+                order.save()
 
-            # Save order items
-            for item_form in formset:
-                if item_form.cleaned_data and not item_form.cleaned_data.get('DELETE'):
-                    item = item_form.save(commit=False)
-                    item.order = order
-                    item.save()
+                # Save order items
+                for item_form in formset:
+                    if item_form.cleaned_data and not item_form.cleaned_data.get('DELETE'):
+                        item = item_form.save(commit=False)
+                        item.order = order
+                        item.save()
 
-                    # If delivered, create batch and update stock
-                    if order.status == 'Delivered' and item.quantity_received > 0:
-                        _create_batch_and_update_stock(item, order)
+                        # If delivered, create batch and update stock
+                        if order.status == 'Delivered' and item.quantity_received > 0:
+                            _create_batch_and_update_stock(item, order)
 
-            messages.success(request, f'تم إنشاء الطلب {order.po_number} بنجاح')
-            return redirect('order_list')
+                messages.success(request, f'تم إنشاء الطلب {order.po_number} بنجاح')
+                return redirect('order_list')
+        except Exception as e:
+            print(f"Exception in order_add: {e}")
+            import traceback
+            traceback.print_exc()
     else:
         form = OrderHeaderForm()
         formset = OrderItemFormSet(prefix='items')
