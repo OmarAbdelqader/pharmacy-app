@@ -14,6 +14,10 @@ from .forms import MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm
 import json
 
 from django.views.decorators.csrf import csrf_exempt
+import logging
+import sys
+
+logger = logging.getLogger(__name__)
 
 
 def paginate_queryset(request, queryset, per_page=20):
@@ -669,38 +673,74 @@ def order_list(request):
 def order_add(request):
     OrderItemFormSet = formset_factory(OrderItemForm, extra=1, can_delete=True, max_num=20)
 
-    print(f"Request method: {request.method}")
+    form_errors = []
+    formset_errors = []
+    
+    logger.info(f"order_add view called with method: {request.method}")
+    print(f"[DEBUG] order_add view called with method: {request.method}", flush=True)
+    
     if request.method == 'POST':
-        print("POST request received for order_add")
-        print(f"POST data keys: {list(request.POST.keys())}")
+        logger.info("POST request received for order_add")
+        print(f"[DEBUG] POST request received for order_add", flush=True)
+        print(f"[DEBUG] POST data keys: {list(request.POST.keys())}", flush=True)
+        print(f"[DEBUG] TOTAL_FORMS value: {request.POST.get('items-TOTAL_FORMS', 'NOT FOUND')}", flush=True)
+        
         try:
             form = OrderHeaderForm(request.POST)
             formset = OrderItemFormSet(request.POST, prefix='items')
 
-            if form.is_valid() and formset.is_valid():
+            # Validate form
+            form_valid = form.is_valid()
+            print(f"[DEBUG] Form valid: {form_valid}", flush=True)
+            if not form_valid:
+                print(f"[DEBUG] Form errors: {form.errors}", flush=True)
+                logger.error(f"Form errors: {form.errors}")
+            
+            # Validate formset
+            formset_valid = formset.is_valid()
+            print(f"[DEBUG] Formset valid: {formset_valid}", flush=True)
+            print(f"[DEBUG] Number of forms in formset: {len(formset)}", flush=True)
+            if not formset_valid:
+                print(f"[DEBUG] Formset errors: {formset.errors}", flush=True)
+                print(f"[DEBUG] Formset non-form errors: {formset.non_form_errors()}", flush=True)
+                logger.error(f"Formset errors: {formset.errors}")
+                logger.error(f"Formset non-form errors: {formset.non_form_errors()}")
+            
+            if form_valid and formset_valid:
+                print(f"[DEBUG] Both form and formset are valid, proceeding to save", flush=True)
                 # Save order header
                 order = form.save(commit=False)
                 order.created_by = request.user
                 order.updated_by = request.user
                 order.save()
+                print(f"[DEBUG] Order saved with PO number: {order.po_number}", flush=True)
 
                 # Save order items
+                item_count = 0
                 for item_form in formset:
                     if item_form.cleaned_data and not item_form.cleaned_data.get('DELETE'):
                         item = item_form.save(commit=False)
                         item.order = order
                         item.save()
+                        item_count += 1
 
                         # If delivered, create batch and update stock
                         if order.status == 'Delivered' and item.quantity_received > 0:
                             _create_batch_and_update_stock(item, order)
-
+                
+                print(f"[DEBUG] Saved {item_count} order items", flush=True)
+                logger.info(f"Order created successfully: {order.po_number} with {item_count} items")
                 messages.success(request, f'تم إنشاء الطلب {order.po_number} بنجاح')
                 return redirect('order_list')
+            else:
+                print(f"[DEBUG] Form or formset validation failed, re-rendering", flush=True)
+                logger.warning("Form or formset validation failed")
+                
         except Exception as e:
-            print(f"Exception in order_add: {e}")
+            print(f"[DEBUG] Exception in order_add: {e}", flush=True)
             import traceback
-            traceback.print_exc()
+            traceback.print_exc(file=sys.stdout)
+            logger.exception(f"Exception in order_add: {e}")
     else:
         form = OrderHeaderForm()
         formset = OrderItemFormSet(prefix='items')
@@ -709,6 +749,8 @@ def order_add(request):
         'form': form,
         'formset': formset,
         'title': 'إنشاء طلب شراء جديد',
+        'form_errors': form_errors,
+        'formset_errors': formset_errors,
     })
 
 

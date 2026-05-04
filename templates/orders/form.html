@@ -32,6 +32,30 @@
 <form method="post" id="orderForm" novalidate>
     {% csrf_token %}
 
+    {% if form_errors %}
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <h5>خطأ في بيانات الطلب:</h5>
+        <ul class="mb-0">
+        {% for error in form_errors %}
+            <li>{{ error }}</li>
+        {% endfor %}
+        </ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endif %}
+
+    {% if formset_errors %}
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <h5>خطأ في أصناف الطلب:</h5>
+        <ul class="mb-0">
+        {% for error in formset_errors %}
+            <li>{{ error }}</li>
+        {% endfor %}
+        </ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endif %}
+
     <!-- Order Header -->
     <div class="table-container mb-3">
         <h6 class="mb-3 text-primary">
