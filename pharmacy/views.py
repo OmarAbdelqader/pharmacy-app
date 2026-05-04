@@ -667,7 +667,7 @@ def order_list(request):
 @csrf_exempt
 @login_required_custom
 def order_add(request):
-    OrderItemFormSet = formset_factory(OrderItemForm, extra=1, can_delete=True)
+    OrderItemFormSet = formset_factory(OrderItemForm, extra=1, can_delete=True, max_num=20)
 
     print(f"Request method: {request.method}")
     if request.method == 'POST':
