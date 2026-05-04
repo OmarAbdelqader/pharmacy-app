@@ -677,13 +677,11 @@ def order_add(request):
     formset_errors = []
     
     logger.info(f"order_add view called with method: {request.method}")
-    print(f"[DEBUG] order_add view called with method: {request.method}", flush=True)
     
     if request.method == 'POST':
         logger.info("POST request received for order_add")
-        print(f"[DEBUG] POST request received for order_add", flush=True)
-        print(f"[DEBUG] POST data keys: {list(request.POST.keys())}", flush=True)
-        print(f"[DEBUG] TOTAL_FORMS value: {request.POST.get('items-TOTAL_FORMS', 'NOT FOUND')}", flush=True)
+        logger.info(f"POST data keys: {list(request.POST.keys())}")
+        logger.info(f"TOTAL_FORMS value: {request.POST.get('items-TOTAL_FORMS', 'NOT FOUND')}")
         
         try:
             form = OrderHeaderForm(request.POST)
@@ -691,29 +689,30 @@ def order_add(request):
 
             # Validate form
             form_valid = form.is_valid()
-            print(f"[DEBUG] Form valid: {form_valid}", flush=True)
+            logger.info(f"Form valid: {form_valid}")
             if not form_valid:
-                print(f"[DEBUG] Form errors: {form.errors}", flush=True)
                 logger.error(f"Form errors: {form.errors}")
+                form_errors = [str(error) for error in form.errors.values()]
             
             # Validate formset
             formset_valid = formset.is_valid()
-            print(f"[DEBUG] Formset valid: {formset_valid}", flush=True)
-            print(f"[DEBUG] Number of forms in formset: {len(formset)}", flush=True)
+            logger.info(f"Formset valid: {formset_valid}")
+            logger.info(f"Number of forms in formset: {len(formset)}")
             if not formset_valid:
-                print(f"[DEBUG] Formset errors: {formset.errors}", flush=True)
-                print(f"[DEBUG] Formset non-form errors: {formset.non_form_errors()}", flush=True)
                 logger.error(f"Formset errors: {formset.errors}")
                 logger.error(f"Formset non-form errors: {formset.non_form_errors()}")
+                formset_errors = [str(error) for error in formset.non_form_errors()]
+                for i, error in enumerate(formset.errors):
+                    formset_errors.append(f"Form {i}: {error}")
             
             if form_valid and formset_valid:
-                print(f"[DEBUG] Both form and formset are valid, proceeding to save", flush=True)
+                logger.info("Both form and formset are valid, proceeding to save")
                 # Save order header
                 order = form.save(commit=False)
                 order.created_by = request.user
                 order.updated_by = request.user
                 order.save()
-                print(f"[DEBUG] Order saved with PO number: {order.po_number}", flush=True)
+                logger.info(f"Order saved with PO number: {order.po_number}")
 
                 # Save order items
                 item_count = 0
@@ -728,18 +727,13 @@ def order_add(request):
                         if order.status == 'Delivered' and item.quantity_received > 0:
                             _create_batch_and_update_stock(item, order)
                 
-                print(f"[DEBUG] Saved {item_count} order items", flush=True)
-                logger.info(f"Order created successfully: {order.po_number} with {item_count} items")
+                logger.info(f"Saved {item_count} order items")
                 messages.success(request, f'تم إنشاء الطلب {order.po_number} بنجاح')
                 return redirect('order_list')
             else:
-                print(f"[DEBUG] Form or formset validation failed, re-rendering", flush=True)
                 logger.warning("Form or formset validation failed")
                 
         except Exception as e:
-            print(f"[DEBUG] Exception in order_add: {e}", flush=True)
-            import traceback
-            traceback.print_exc(file=sys.stdout)
             logger.exception(f"Exception in order_add: {e}")
     else:
         form = OrderHeaderForm()
@@ -940,9 +934,13 @@ def report_stock_movement(request):
 
 @login_required_custom
 def report_current_stock(request):
-    medicines = Medicine.objects.all().order_by('category', 'id')
+    # Get all batches with remaining quantity > 0, ordered by medicine and expiry
+    batches = Batch.objects.filter(
+        quantity_remaining__gt=0
+    ).select_related('medicine').order_by('medicine__category', 'medicine__name', 'expiry_date')
+    
     return render(request, 'reports/current_stock.html', {
-        'medicines': medicines,
+        'batches': batches,
     })
 
 

@@ -6,35 +6,39 @@
 <div class="page-header d-flex justify-content-between align-items-center">
     <div>
         <h4 class="mb-1">تقرير المخزون الحالي</h4>
-        <p class="text-muted mb-0">عرض مستويات المخزون الحالية لجميع الأصناف</p>
+        <p class="text-muted mb-0">عرض التشغيلات المتاحة مع تواريخ الانتهاء</p>
     </div>
 </div>
 
 <div class="table-container">
-    {% if medicines %}
+    {% if batches %}
     <div class="table-responsive">
         <table class="table table-hover align-middle">
             <thead class="table-light">
                 <tr>
                     <th>نوع الصنف</th>
                     <th>اسم الصنف</th>
-                    <th>الرصيد الحالي</th>
-                    <th>حد إعادة الطلب</th>
+                    <th>رقم التشغيلة</th>
+                    <th>تاريخ الانتهاء</th>
+                    <th>الكمية المتبقية</th>
                     <th>الحالة</th>
                 </tr>
             </thead>
             <tbody>
-                {% for medicine in medicines %}
+                {% for batch in batches %}
                 <tr>
-                    <td>{{ medicine.category|default:'—' }}</td>
-                    <td><strong>{{ medicine.name }}</strong></td>
-                    <td>{{ medicine.current_stock }}</td>
-                    <td>{{ medicine.reorder_level }}</td>
+                    <td>{{ batch.medicine.category|default:'—' }}</td>
+                    <td><strong>{{ batch.medicine.name }}</strong></td>
+                    <td>{{ batch.batch_number|default:'—' }}</td>
+                    <td>{{ batch.expiry_date }}</td>
+                    <td>{{ batch.quantity_remaining }}</td>
                     <td>
-                        {% if medicine.is_low_stock %}
-                        <span class="badge bg-danger">تحت الحد</span>
+                        {% if batch.is_expired %}
+                        <span class="badge bg-danger">منتهي الصلاحية</span>
+                        {% elif batch.expiry_date <= batch.expiry_date|date:"Y-m-d"|date:"Y-m-d"|add_days:30 %}
+                        <span class="badge bg-warning text-dark">قريب الانتهاء</span>
                         {% else %}
-                        <span class="badge bg-success">متاح</span>
+                        <span class="badge bg-success">صالح</span>
                         {% endif %}
                     </td>
                 </tr>
@@ -45,7 +49,7 @@
     {% else %}
     <div class="text-center py-5">
         <div class="fs-1">📦</div>
-        <h5 class="mt-3">لا يوجد أصناف لعرضها</h5>
+        <h5 class="mt-3">لا يوجد مخزون متاح</h5>
     </div>
     {% endif %}
 </div>
