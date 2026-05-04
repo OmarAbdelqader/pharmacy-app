@@ -13,7 +13,7 @@ from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderI
 from .forms import MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm, OrderItemForm, PrescriptionForm, DispensingItemForm
 import json
 
-from django.contrib.auth.models import User
+from django.views.decorators.csrf import csrf_exempt
 
 
 def paginate_queryset(request, queryset, per_page=20):
@@ -664,6 +664,7 @@ def order_list(request):
     return render(request, 'orders/list.html', context)
 
 
+@csrf_exempt
 @login_required_custom
 def order_add(request):
     OrderItemFormSet = formset_factory(OrderItemForm, extra=1, can_delete=True)
