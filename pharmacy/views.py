@@ -668,10 +668,9 @@ def order_list(request):
     return render(request, 'orders/list.html', context)
 
 
-@csrf_exempt
 @login_required_custom
 def order_add(request):
-    OrderItemFormSet = formset_factory(OrderItemForm, extra=1, can_delete=True, max_num=20)
+    OrderItemFormSet = get_order_item_formset(extra=1)
 
     form_errors = []
     formset_errors = []
@@ -707,26 +706,13 @@ def order_add(request):
             
             if form_valid and formset_valid:
                 logger.info("Both form and formset are valid, proceeding to save")
-                # Save order header
                 order = form.save(commit=False)
                 order.created_by = request.user
                 order.updated_by = request.user
                 order.save()
                 logger.info(f"Order saved with PO number: {order.po_number}")
 
-                # Save order items
-                item_count = 0
-                for item_form in formset:
-                    if item_form.cleaned_data and not item_form.cleaned_data.get('DELETE'):
-                        item = item_form.save(commit=False)
-                        item.order = order
-                        item.save()
-                        item_count += 1
-
-                        # If delivered, create batch and update stock
-                        if order.status == 'Delivered' and item.quantity_received > 0:
-                            _create_batch_and_update_stock(item, order)
-                
+                item_count = _save_order_items(order, formset)
                 logger.info(f"Saved {item_count} order items")
                 messages.success(request, f'تم إنشاء الطلب {order.po_number} بنجاح')
                 return redirect('order_list')
@@ -751,7 +737,7 @@ def order_add(request):
 @login_required_custom
 def order_edit(request, pk):
     order = get_object_or_404(OrderHeader, pk=pk)
-    OrderItemFormSet = formset_factory(OrderItemForm, extra=1, can_delete=True)
+    OrderItemFormSet = get_order_item_formset(extra=1)
 
     if request.method == 'POST':
         form = OrderHeaderForm(request.POST, instance=order)
@@ -762,18 +748,8 @@ def order_edit(request, pk):
             order.updated_by = request.user
             order.save()
 
-            # Delete existing items and recreate
             order.items.all().delete()
-
-            for item_form in formset:
-                if item_form.cleaned_data and not item_form.cleaned_data.get('DELETE'):
-                    item = item_form.save(commit=False)
-                    item.order = order
-                    item.save()
-
-                    # If delivered, create batch and update stock
-                    if order.status == 'Delivered' and item.quantity_received > 0:
-                        _create_batch_and_update_stock(item, order)
+            _save_order_items(order, formset)
 
             messages.success(request, f'تم تحديث الطلب {order.po_number} بنجاح')
             return redirect('order_list')
@@ -790,7 +766,7 @@ def order_edit(request, pk):
                 'batch_number': item.batch_number,
                 'expiry_date': item.expiry_date,
             })
-        OrderItemFormSet = formset_factory(OrderItemForm, extra=0, can_delete=True)
+        OrderItemFormSet = get_order_item_formset(extra=0)
         formset = OrderItemFormSet(prefix='items', initial=initial_data)
 
     return render(request, 'orders/form.html', {

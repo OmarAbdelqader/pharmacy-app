@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.db import models
 from django.contrib.auth.models import User
 
@@ -99,6 +101,16 @@ class Batch(TimeStampedModel):
     def is_expired(self):
         from django.utils import timezone
         return self.expiry_date < timezone.now().date()
+
+    @property
+    def expiry_status(self):
+        from django.utils import timezone
+        today = timezone.now().date()
+        if self.expiry_date < today:
+            return 'expired'
+        if self.expiry_date <= today + timedelta(days=30):
+            return 'expiring'
+        return 'valid'
 
 
 class OrderHeader(TimeStampedModel):

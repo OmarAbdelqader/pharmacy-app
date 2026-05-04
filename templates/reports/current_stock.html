@@ -33,9 +33,9 @@
                     <td>{{ batch.expiry_date }}</td>
                     <td>{{ batch.quantity_remaining }}</td>
                     <td>
-                        {% if batch.is_expired %}
+                        {% if batch.expiry_status == 'expired' %}
                         <span class="badge bg-danger">منتهي الصلاحية</span>
-                        {% elif batch.expiry_date <= batch.expiry_date|date:"Y-m-d"|date:"Y-m-d"|add_days:30 %}
+                        {% elif batch.expiry_status == 'expiring' %}
                         <span class="badge bg-warning text-dark">قريب الانتهاء</span>
                         {% else %}
                         <span class="badge bg-success">صالح</span>
