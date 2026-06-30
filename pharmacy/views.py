@@ -20,6 +20,10 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+def get_order_item_formset(extra=1):
+    return formset_factory(OrderItemForm, extra=extra)
+
+
 def paginate_queryset(request, queryset, per_page=20):
     paginator = Paginator(queryset, per_page)
     page = request.GET.get('page')
@@ -775,6 +779,50 @@ def order_edit(request, pk):
         'title': f'تعديل الطلب: {order.po_number}',
         'order': order,
     })
+
+
+def _save_order_items(order, formset):
+    """Persist order line items and create batches/stock updates when present."""
+    saved_items = 0
+
+    for form in formset.forms:
+        if not form.is_valid():
+            continue
+
+        cleaned = form.cleaned_data
+        if not cleaned:
+            continue
+
+        if form.cleaned_data.get('DELETE'):
+            continue
+
+        medicine = cleaned.get('medicine')
+        quantity_ordered = cleaned.get('quantity_ordered') or 0
+        quantity_received = cleaned.get('quantity_received') or 0
+        unit_cost = cleaned.get('unit_cost')
+        batch_number = cleaned.get('batch_number') or ''
+        expiry_date = cleaned.get('expiry_date')
+
+        if not medicine:
+            continue
+
+        item = OrderItem.objects.create(
+            order=order,
+            medicine=medicine,
+            quantity_ordered=quantity_ordered,
+            quantity_received=quantity_received,
+            unit_cost=unit_cost,
+            batch_number=batch_number,
+            expiry_date=expiry_date,
+        )
+        item.total_cost = item.quantity_received * item.unit_cost if item.quantity_received and item.unit_cost else None
+        item.save(update_fields=['total_cost'])
+
+        if quantity_received > 0:
+            _create_batch_and_update_stock(item, order)
+            saved_items += 1
+
+    return saved_items
 
 
 @admin_required
