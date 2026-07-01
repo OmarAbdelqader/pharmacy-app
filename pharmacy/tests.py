@@ -1,6 +1,7 @@
 from django.contrib.auth.models import User
 from django.forms import formset_factory
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
 
 from .forms import OrderItemForm
@@ -19,6 +20,15 @@ class OrderItemSaveTests(TestCase):
             created_by=self.user,
             updated_by=self.user,
         )
+
+    def test_order_form_renders_clickable_delete_control(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse('order_add'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'for="id_items-0-DELETE"')
+        self.assertContains(response, 'name="items-0-DELETE"')
 
     def test_save_order_items_creates_items_and_batches(self):
         formset_class = formset_factory(OrderItemForm, extra=0)

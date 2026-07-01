@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_order_item_formset(extra=1):
-    return formset_factory(OrderItemForm, extra=extra)
+    return formset_factory(OrderItemForm, extra=extra, can_delete=True)
 
 
 def paginate_queryset(request, queryset, per_page=20):
