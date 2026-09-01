@@ -1,6 +1,23 @@
 from django import forms
 from django.contrib.auth.models import User
+from django.forms.widgets import DateInput as _DateInput
 from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem, Prescription, DispensingItem, UserProfile
+
+
+class _MonthDateInput(_DateInput):
+    """DateInput that formats datetime.date → YYYY-MM for the HTML month picker."""
+
+    input_type = 'month'
+
+    def format_value(self, value):
+        if not value:
+            return ''
+        if hasattr(value, 'year'):
+            return f'{value.year:04d}-{value.month:02d}'
+        s = str(value)
+        if len(s) >= 7 and s[4] == '-':
+            return s[:7]
+        return s
 
 
 class MedicineForm(forms.ModelForm):
@@ -116,7 +133,7 @@ class OrderHeaderForm(forms.ModelForm):
         model = OrderHeader
         fields = [
             'supplier', 'supplier_reference', 'order_date',
-            'delivery_date', 'status', 'received_by', 'notes'
+            'delivery_date', 'receive_date', 'status', 'received_by', 'notes'
         ]
         widgets = {
             'supplier': forms.Select(attrs={
@@ -131,6 +148,10 @@ class OrderHeaderForm(forms.ModelForm):
                 'type': 'date'
             }),
             'delivery_date': forms.DateInput(attrs={
+                'class': 'form-control',
+                'type': 'date'
+            }),
+            'receive_date': forms.DateInput(attrs={
                 'class': 'form-control',
                 'type': 'date'
             }),
@@ -150,7 +171,8 @@ class OrderHeaderForm(forms.ModelForm):
             'supplier': 'المورد',
             'supplier_reference': 'رقم مرجع المورد',
             'order_date': 'تاريخ الطلب',
-            'delivery_date': 'تاريخ الاستلام',
+            'delivery_date': 'تاريخ الاستلام المتوقع',
+            'receive_date': 'تاريخ الاستلام الفعلي',
             'status': 'حالة الطلب',
             'received_by': 'الصيدلي المستلم',
             'notes': 'ملاحظات',
@@ -160,9 +182,8 @@ class OrderHeaderForm(forms.ModelForm):
 class OrderItemForm(forms.ModelForm):
     expiry_date = forms.DateField(
         required=False,
-        widget=forms.DateInput(attrs={
+        widget=_MonthDateInput(attrs={
             'class': 'form-control',
-            'type': 'month'
         }),
         input_formats=['%Y-%m', '%Y-%m-%d']
     )
@@ -205,6 +226,31 @@ class OrderItemForm(forms.ModelForm):
             'batch_number': 'رقم التشغيلة',
             'expiry_date': 'تاريخ الانتهاء',
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['quantity_ordered'].required = False
+        self.fields['quantity_ordered'].empty_value = 0
+        self.fields['quantity_received'].required = False
+        self.fields['quantity_received'].empty_value = 0
+        self.fields['unit_cost'].required = False
+        self.fields['batch_number'].required = False
+
+    def clean_quantity_ordered(self):
+        v = self.cleaned_data.get('quantity_ordered')
+        return 0 if v in (None, '') else v
+
+    def clean_quantity_received(self):
+        v = self.cleaned_data.get('quantity_received')
+        return 0 if v in (None, '') else v
+
+    def clean_unit_cost(self):
+        v = self.cleaned_data.get('unit_cost')
+        return None if v in (None, '') else v
+
+    def clean_batch_number(self):
+        v = self.cleaned_data.get('batch_number')
+        return '' if v in (None,) else (v or '')
 
 class PrescriptionForm(forms.ModelForm):
     prefix_digits = forms.CharField(
