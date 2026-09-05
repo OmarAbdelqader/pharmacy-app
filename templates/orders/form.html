@@ -56,6 +56,16 @@
     </div>
     {% endif %}
 
+    {% if form.non_field_errors or form.receive_date.errors or form.status.errors %}
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <h5>خطأ في بيانات الطلب:</h5>
+        {{ form.non_field_errors }}
+        {{ form.receive_date.errors }}
+        {{ form.status.errors }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endif %}
+
     <!-- Order Header -->
     <div class="table-container mb-3">
         <h6 class="mb-3 text-primary">
@@ -83,13 +93,15 @@
                 <label class="form-label">{{ form.order_date.label }} <span class="text-danger">*</span></label>
                 {{ form.order_date }}
             </div>
-            <div class="col-md-3">
-                <label class="form-label">{{ form.delivery_date.label }}</label>
-                {{ form.delivery_date }}
-            </div>
+                    <div class="col-md-3">
+                        <label class="form-label">{{ form.receive_date.label }}</label>
+                        {{ form.receive_date }}
+                        {{ form.receive_date.errors }}
+                    </div>
             <div class="col-md-3">
                 <label class="form-label">{{ form.status.label }} <span class="text-danger">*</span></label>
                 {{ form.status }}
+                    {{ form.status.errors }}
             </div>
             <div class="col-md-3">
                 <label class="form-label">{{ form.received_by.label }}</label>
@@ -200,22 +212,21 @@
         }
 
         const medicineId = medicineSelect.value;
+        const requestId = (row._medicineRequestId || 0) + 1;
+        row._medicineRequestId = requestId;
         if (medicineId) {
             fetch(`/api/medicine/${medicineId}/`)
                 .then(response => response.json())
                 .then(data => {
+                    if (row._medicineRequestId !== requestId) return;
                     reorderInput.value = data.reorder_level;
                     stockInput.value = data.current_stock;
-                    if (data.suggested_qty > 0 && !qtyInput.value) {
-                        qtyInput.value = data.suggested_qty;
-                    }
+                    qtyInput.value = data.suggested_qty > 0 ? data.suggested_qty : '';
                 });
         } else {
             reorderInput.value = '';
             stockInput.value = '';
-            if (!qtyInput.value) {
-                qtyInput.value = '';
-            }
+            qtyInput.value = '';
         }
     }
 

@@ -55,6 +55,10 @@ class Medicine(TimeStampedModel):
 
     class Meta:
         ordering = ['id']
+        indexes = [
+            models.Index(fields=['category', 'id']),
+            models.Index(fields=['current_stock', 'reorder_level']),
+        ]
         verbose_name = 'صنف'
         verbose_name_plural = 'الأصناف'
 
@@ -116,6 +120,9 @@ class Batch(TimeStampedModel):
 
     class Meta:
         ordering = ['expiry_date']
+        indexes = [
+            models.Index(fields=['expiry_date', 'quantity_remaining']),
+        ]
         verbose_name = 'تشغيلة'
         verbose_name_plural = 'التشغيلات'
 
@@ -164,7 +171,6 @@ class OrderHeader(TimeStampedModel):
     )
     supplier_reference = models.CharField(max_length=100, blank=True)
     order_date = models.DateField()
-    delivery_date = models.DateField(null=True, blank=True)
     receive_date = models.DateField(null=True, blank=True,
                                     verbose_name='تاريخ الاستلام الفعلي')
     status = models.CharField(
@@ -181,6 +187,9 @@ class OrderHeader(TimeStampedModel):
 
     class Meta:
         ordering = ['-order_date']
+        indexes = [
+            models.Index(fields=['status', '-order_date']),
+        ]
         verbose_name = 'طلب شراء'
         verbose_name_plural = 'طلبات الشراء'
 
@@ -263,6 +272,9 @@ class Prescription(TimeStampedModel):
     dispensing_date = models.DateField()
 
     class Meta:
+        indexes = [
+            models.Index(fields=['dispensing_date', 'prescription_ref']),
+        ]
         ordering = ['-dispensing_date', 'prescription_ref']
         verbose_name = 'تذكرة'
         verbose_name_plural = 'التذاكر'

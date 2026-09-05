@@ -143,6 +143,12 @@ def _orderitem_create_batch_and_stock(sender, instance, created, **kwargs):
     if not instance.quantity_received or instance.quantity_received <= 0:
         return
 
+    from .models import OrderHeader
+    if not instance.order_id or not OrderHeader.objects.filter(
+        pk=instance.order_id, status='Delivered'
+    ).exists():
+        return
+
     from django.utils import timezone
 
     batch_number = instance.batch_number or 'N/A'
@@ -158,7 +164,6 @@ def _orderitem_create_batch_and_stock(sender, instance, created, **kwargs):
     # Derive effective receive date: receive_date -> order_date -> today
     received_on = None
     if instance.order_id:
-        from .models import OrderHeader
         try:
             order_recv, order_dt = OrderHeader.objects.values_list(
                 'receive_date', 'order_date'

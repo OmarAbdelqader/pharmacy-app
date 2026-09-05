@@ -2,9 +2,10 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.contrib import messages
+from django.contrib.messages import get_messages
 from django.utils import timezone
 from django.db import models
-from django.db.models import Q, Sum
+from django.db.models import Count, Prefetch, Q, Sum
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.forms import formset_factory
 from django.http import JsonResponse
@@ -41,6 +42,8 @@ def paginate_queryset(request, queryset, per_page=20):
 def login_view(request):
     if request.user.is_authenticated:
         return redirect('dashboard')
+    # Do not carry failed-login or stale action messages into the dashboard.
+    list(get_messages(request))
     if request.method == 'POST':
         username = request.POST.get('username')
         password = request.POST.get('password')
@@ -48,8 +51,10 @@ def login_view(request):
         if user is not None:
             login(request, user)
             return redirect('dashboard')
-        else:
-            messages.error(request, 'اسم المستخدم أو كلمة المرور غير صحيحة')
+        return render(request, 'registration/login.html', {
+            'login_error': True,
+            'username': username,
+        })
     return render(request, 'registration/login.html')
 
 
@@ -115,8 +120,8 @@ def medicine_list(request):
         'category', flat=True
     ).distinct().order_by('category')
 
-    total = medicines.count()
     page_obj = paginate_queryset(request, medicines)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()
@@ -200,8 +205,8 @@ def supplier_list(request):
             Q(phone__icontains=search)
         )
 
-    total = suppliers.count()
     page_obj = paginate_queryset(request, suppliers)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()
@@ -281,7 +286,7 @@ def code_list(request):
 
     if selected_medicine_id:
         selected_medicine = get_object_or_404(Medicine, pk=selected_medicine_id)
-        codes = MedicineCode.objects.filter(medicine=selected_medicine)
+        codes = MedicineCode.objects.filter(medicine=selected_medicine).select_related('medicine')
 
     if search:
         medicines = medicines.filter(
@@ -296,7 +301,7 @@ def code_list(request):
             ).first()
             if code_match:
                 selected_medicine = code_match.medicine
-                codes = MedicineCode.objects.filter(medicine=selected_medicine)
+                codes = MedicineCode.objects.filter(medicine=selected_medicine).select_related('medicine')
 
     page_obj = paginate_queryset(request, codes)
     query_params = request.GET.copy()
@@ -412,7 +417,9 @@ def prescription_list(request):
     search = request.GET.get('search', '')
     date_filter = request.GET.get('date', '')
 
-    prescriptions = Prescription.objects.all().order_by('-dispensing_date', '-id')
+    prescriptions = Prescription.objects.select_related('created_by').annotate(
+        item_count=Count('items')
+    ).order_by('-dispensing_date', '-id')
 
     if search:
         prescriptions = prescriptions.filter(
@@ -422,8 +429,8 @@ def prescription_list(request):
     if date_filter:
         prescriptions = prescriptions.filter(dispensing_date=date_filter)
 
-    total = prescriptions.count()
     page_obj = paginate_queryset(request, prescriptions)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()
@@ -574,27 +581,42 @@ def prescription_delete(request, pk):
 
 def _get_medicines_json():
     """Returns medicines with their codes and available batches as JSON"""
-    medicines = []
-    for medicine in Medicine.objects.all().order_by('id'):
-        codes = list(medicine.codes.values_list('code', flat=True))
+    medicines = Medicine.objects.all().order_by('id').prefetch_related(
+        Prefetch(
+            'codes',
+            queryset=MedicineCode.objects.only('medicine_id', 'code'),
+            to_attr='prefetched_codes',
+        ),
+        Prefetch(
+            'batches',
+            queryset=Batch.objects.filter(
+                quantity_remaining__gt=0
+            ).only(
+                'id', 'medicine_id', 'batch_number',
+                'expiry_date', 'quantity_remaining',
+            ).order_by('expiry_date'),
+            to_attr='available_batches',
+        ),
+    )
+    medicines_json = []
+    for medicine in medicines:
+        codes = [code.code for code in medicine.prefetched_codes]
         batches = []
-        for batch in medicine.batches.filter(
-            quantity_remaining__gt=0
-        ).order_by('expiry_date'):
+        for batch in medicine.available_batches:
             batches.append({
                 'id': batch.id,
                 'batch_number': batch.batch_number,
                 'expiry_date': str(batch.expiry_date),
                 'quantity_remaining': batch.quantity_remaining,
             })
-        medicines.append({
+        medicines_json.append({
             'id': medicine.id,
             'name': medicine.name,
             'codes': codes,
             'default_qty': medicine.default_dispense_qty or 1,
             'batches': batches,
         })
-    return json.dumps(medicines, ensure_ascii=False)
+    return json.dumps(medicines_json, ensure_ascii=False)
 
 
 def _validate_dispensing_items(request, prescription_snapshot=None):
@@ -648,24 +670,17 @@ def _validate_dispensing_items(request, prescription_snapshot=None):
     # Net change: positive means MORE stock consumed than before (more risky)
     # We check: new_qty_for_this_batch <= old_qty_for_this_batch + batch.remaining
     # Because at apply-time we will first restore the old then subtract the new.
-    def available_for_batch(bid):
-        b = Batch.objects.get(pk=bid)
-        return (old_batch_qty.get(bid, 0) + b.quantity_remaining)
-
-    def available_for_med(mid):
-        m = Medicine.objects.get(pk=mid)
-        return (old_med_qty.get(mid, 0) + m.current_stock)
+    medicines_by_id = Medicine.objects.in_bulk(new_med_qty)
+    batches_by_id = Batch.objects.in_bulk(new_batch_qty)
 
     # ── Pass 1: Validate every item (no mutations yet) ──────────────────
     for medicine_id, batch_id, quantity, line_no in parsed:
-        try:
-            medicine = Medicine.objects.get(pk=medicine_id)
-        except Medicine.DoesNotExist:
+        medicine = medicines_by_id.get(medicine_id)
+        if medicine is None:
             errors.append(f'الصنف في السطر {line_no} غير موجود')
             continue
-        try:
-            batch = Batch.objects.get(pk=batch_id)
-        except Batch.DoesNotExist:
+        batch = batches_by_id.get(batch_id)
+        if batch is None:
             errors.append(f'التشغيلة في السطر {line_no} غير موجودة')
             continue
         if batch.medicine_id != medicine_id:
@@ -674,22 +689,19 @@ def _validate_dispensing_items(request, prescription_snapshot=None):
                 f'لا تنتمي إلى الصنف {medicine.name}'
             )
             continue
-        try:
-            if quantity > available_for_batch(batch_id):
-                errors.append(
-                    f'السطر {line_no}: الكمية المطلوبة ({quantity}) '
-                    f'تتجاوز المتوفر في التشغيلة ({batch.quantity_remaining}) '
-                    f'للصنف {medicine.name}'
-                )
-                continue
-            if quantity > available_for_med(medicine_id):
-                errors.append(
-                    f'السطر {line_no}: الكمية المطلوبة ({quantity}) '
-                    f'تتجاوز المخزون الحالي ({medicine.current_stock}) '
-                    f'للصنف {medicine.name}'
-                )
-        except (Medicine.DoesNotExist, Batch.DoesNotExist):
+        if quantity > old_batch_qty.get(batch_id, 0) + batch.quantity_remaining:
+            errors.append(
+                f'السطر {line_no}: الكمية المطلوبة ({quantity}) '
+                f'تتجاوز المتوفر في التشغيلة ({batch.quantity_remaining}) '
+                f'للصنف {medicine.name}'
+            )
             continue
+        if quantity > old_med_qty.get(medicine_id, 0) + medicine.current_stock:
+            errors.append(
+                f'السطر {line_no}: الكمية المطلوبة ({quantity}) '
+                f'تتجاوز المخزون الحالي ({medicine.current_stock}) '
+                f'للصنف {medicine.name}'
+            )
 
     if errors:
         for msg in errors:
@@ -703,11 +715,13 @@ def _apply_dispensing_items(request, prescription, parsed):
     NOTE: callers MUST have already restored old stock & deleted old items
           (if editing) before invoking this.
     """
+    medicines_by_id = Medicine.objects.in_bulk({item[0] for item in parsed})
+    batches_by_id = Batch.objects.in_bulk({item[1] for item in parsed})
+
     for medicine_id, batch_id, quantity, _line_no in parsed:
-        try:
-            medicine = Medicine.objects.get(pk=medicine_id)
-            batch = Batch.objects.get(pk=batch_id)
-        except (Medicine.DoesNotExist, Batch.DoesNotExist):
+        medicine = medicines_by_id.get(medicine_id)
+        batch = batches_by_id.get(batch_id)
+        if medicine is None or batch is None:
             continue
 
         dispensing_item = DispensingItem(
@@ -771,7 +785,9 @@ def order_list(request):
     status_filter = request.GET.get('status', '')
     search = request.GET.get('search', '')
 
-    orders = OrderHeader.objects.all().order_by('-order_date', '-id')
+    orders = OrderHeader.objects.select_related(
+        'supplier', 'received_by', 'created_by'
+    ).order_by('-order_date', '-id')
 
     if status_filter:
         orders = orders.filter(status=status_filter)
@@ -783,8 +799,8 @@ def order_list(request):
             Q(supplier_reference__icontains=search)
         )
 
-    total = orders.count()
     page_obj = paginate_queryset(request, orders)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()
@@ -873,6 +889,7 @@ def order_edit(request, pk):
     OrderItemFormSet = get_order_item_formset(extra=1)
 
     if request.method == 'POST':
+        previous_status = order.status
         form = OrderHeaderForm(request.POST, instance=order)
         formset = OrderItemFormSet(request.POST, prefix='items')
 
@@ -881,7 +898,7 @@ def order_edit(request, pk):
             order.updated_by = request.user
             order.save()
 
-            _restore_order_stock(order)
+            _restore_order_stock(order, was_delivered=(previous_status == 'Delivered'))
 
             for existing in order.items.all():
                 existing._skip_stock_signal = True
@@ -910,6 +927,8 @@ def order_edit(request, pk):
         'formset': formset,
         'title': f'تعديل الطلب: {order.po_number}',
         'order': order,
+        'form_errors': [str(error) for error in form.errors.values()],
+        'formset_errors': [str(error) for error in formset.errors],
     })
 
 
@@ -951,7 +970,7 @@ def _save_order_items(order, formset):
         item._skip_stock_signal = True
         item.save()
 
-        if quantity_received > 0:
+        if order.status == 'Delivered' and quantity_received > 0:
             _create_batch_and_update_stock(item, order)
             saved_items += 1
 
@@ -964,7 +983,7 @@ def order_delete(request, pk):
     if request.method == 'POST':
         po_number = order.po_number
         try:
-            _restore_order_stock(order)
+            _restore_order_stock(order, was_delivered=(order.status == 'Delivered'))
             for item in order.items.all():
                 item._skip_stock_signal = True
                 item.delete()
@@ -976,8 +995,10 @@ def order_delete(request, pk):
     return render(request, 'orders/delete.html', {'order': order})
 
 
-def _restore_order_stock(order):
+def _restore_order_stock(order, was_delivered=True):
     """Reverse batch & medicine stock updates created by an order's received items."""
+    if not was_delivered:
+        return
     for item in order.items.all():
         qty = item.quantity_received or 0
         if qty <= 0 or not item.medicine_id:
@@ -1067,15 +1088,11 @@ def report_stock_movement(request):
         medicines = medicines.filter(category__icontains=category_filter)
 
     categories = Medicine.objects.values_list('category', flat=True).distinct().order_by('category')
-    rows = []
+    medicine_ids = list(medicines.values_list('id', flat=True))
 
-    def _purchases(medicine, start=None, end=None):
-        """Sum received qty of Delivered PO items whose effective receive_date
-        (receive_date, else order_date) falls within [start, end] (inclusive),
-        or unbounded in that direction if None.
-        """
-        qs = OrderItem.objects.filter(
-            medicine=medicine,
+    def _purchase_totals(start=None, end=None, end_exclusive=False):
+        queryset = OrderItem.objects.filter(
+            medicine_id__in=medicine_ids,
             order__status='Delivered',
         ).annotate(
             effective=models.Case(
@@ -1086,65 +1103,68 @@ def report_stock_movement(request):
             )
         )
         if start is not None:
-            qs = qs.filter(effective__gte=start)
+            queryset = queryset.filter(effective__gte=start)
         if end is not None:
-            qs = qs.filter(effective__lte=end)
-        return qs.aggregate(total=Sum('quantity_received'))['total'] or 0
+            queryset = queryset.filter(
+                effective__lt=end if end_exclusive else end
+            )
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('quantity_received')
+            )
+        }
+
+    def _dispensing_totals(start=None, end=None, end_exclusive=False):
+        queryset = DispensingItem.objects.filter(medicine_id__in=medicine_ids)
+        if start is not None:
+            queryset = queryset.filter(prescription__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'prescription__dispensing_date__lt' if end_exclusive else 'prescription__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('quantity_dispensed')
+            )
+        }
+
+    if start_date:
+        purchases_in_range = _purchase_totals(start=start_date, end=end_date)
+        dispensed_in_range = _dispensing_totals(start=start_date, end=end_date)
+        purchases_before = _purchase_totals(end=start_date, end_exclusive=True)
+        dispensed_before = _dispensing_totals(end=start_date, end_exclusive=True)
+    else:
+        purchases_in_range = _purchase_totals(end=end_date)
+        dispensed_in_range = _dispensing_totals(end=end_date)
+        purchases_before = {}
+        dispensed_before = {}
+
+    medicines = medicines.prefetch_related(Prefetch(
+        'batches',
+        queryset=Batch.objects.filter(
+            quantity_remaining__gt=0
+        ).only('medicine_id', 'expiry_date', 'batch_number').order_by('expiry_date'),
+        to_attr='available_batches',
+    ))
+    rows = []
 
     for medicine in medicines:
-        if start_date:
-            purchases_in_range = _purchases(medicine, start=start_date, end=end_date)
-            dispensed_in_range = DispensingItem.objects.filter(
-                medicine=medicine,
-                prescription__dispensing_date__gte=start_date,
-                prescription__dispensing_date__lte=end_date,
-            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
+        purchased = purchases_in_range.get(medicine.id, 0)
+        dispensed = dispensed_in_range.get(medicine.id, 0)
+        opening_stock = purchases_before.get(medicine.id, 0) - dispensed_before.get(medicine.id, 0)
+        closing_stock = opening_stock + purchased - dispensed
 
-            purchases_before = _purchases(medicine, end=None)  # will get bounded by start in second call
-            # _purchases(..., end=None) gives ALL purchases up to infinity. We need purchases UP TO (not including) start_date.
-            # So call with end = start-1day via explicit less-than:
-            purchases_before = OrderItem.objects.filter(
-                medicine=medicine,
-                order__status='Delivered',
-            ).annotate(
-                effective=models.Case(
-                    models.When(order__receive_date__isnull=False,
-                                then=models.F('order__receive_date')),
-                    default=models.F('order__order_date'),
-                    output_field=models.DateField(),
-                )
-            ).filter(effective__lt=start_date).aggregate(
-                total=Sum('quantity_received')
-            )['total'] or 0
-
-            dispensed_before = DispensingItem.objects.filter(
-                medicine=medicine,
-                prescription__dispensing_date__lt=start_date
-            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
-
-            opening_stock = purchases_before - dispensed_before
-            closing_stock = opening_stock + purchases_in_range - dispensed_in_range
-        else:
-            # No start → show purchases *up to end_date* (full window, no "opening" defined)
-            purchases_in_range = _purchases(medicine, start=None, end=end_date)
-            dispensed_in_range = DispensingItem.objects.filter(
-                medicine=medicine,
-                prescription__dispensing_date__lte=end_date,
-            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
-
-            opening_stock = 0
-            closing_stock = opening_stock + purchases_in_range - dispensed_in_range
-
-        if purchases_in_range == 0 and dispensed_in_range == 0:
+        if purchased == 0 and dispensed == 0:
             continue
 
-        nearest_batch = medicine.batches.filter(quantity_remaining__gt=0).order_by('expiry_date').first()
+        nearest_batch = medicine.available_batches[0] if medicine.available_batches else None
         rows.append({
             'medicine': medicine,
             'opening_stock': opening_stock,
-            'purchased': purchases_in_range,
-            'total': opening_stock + purchases_in_range,
-            'dispensed': dispensed_in_range,
+            'purchased': purchased,
+            'total': opening_stock + purchased,
+            'dispensed': dispensed,
             'closing_stock': closing_stock,
             'nearest_expiry': nearest_batch.expiry_date if nearest_batch else None,
             'nearest_batch_number': nearest_batch.batch_number if nearest_batch else '—',
@@ -1180,7 +1200,7 @@ def report_expiry(request):
         expiry_date__gte=today,
         expiry_date__lte=six_months,
         quantity_remaining__gt=0
-    ).order_by('expiry_date')
+    ).select_related('medicine').order_by('expiry_date')
     return render(request, 'reports/expiry.html', {
         'batches': batches,
         'today': today,
@@ -1264,6 +1284,11 @@ def report_daily_dispensing(request):
 
     prescriptions = Prescription.objects.filter(
         dispensing_date=selected_date
+    ).annotate(item_count=Count('items')).prefetch_related(
+        Prefetch(
+            'items',
+            queryset=DispensingItem.objects.select_related('medicine'),
+        )
     ).order_by('prescription_ref')
 
     return render(request, 'reports/daily_dispensing.html', {
@@ -1279,7 +1304,7 @@ def user_list(request):
     search = request.GET.get('search', '')
     role_filter = request.GET.get('role', '')
 
-    users = User.objects.all().order_by('username')
+    users = User.objects.select_related('profile').order_by('username')
 
     if search:
         users = users.filter(
@@ -1292,8 +1317,8 @@ def user_list(request):
     if role_filter:
         users = users.filter(profile__role=role_filter)
 
-    total = users.count()
     page_obj = paginate_queryset(request, users)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()

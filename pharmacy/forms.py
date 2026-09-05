@@ -133,7 +133,7 @@ class OrderHeaderForm(forms.ModelForm):
         model = OrderHeader
         fields = [
             'supplier', 'supplier_reference', 'order_date',
-            'delivery_date', 'receive_date', 'status', 'received_by', 'notes'
+            'receive_date', 'status', 'received_by', 'notes'
         ]
         widgets = {
             'supplier': forms.Select(attrs={
@@ -144,10 +144,6 @@ class OrderHeaderForm(forms.ModelForm):
                 'placeholder': 'رقم مرجع المورد'
             }),
             'order_date': forms.DateInput(attrs={
-                'class': 'form-control',
-                'type': 'date'
-            }),
-            'delivery_date': forms.DateInput(attrs={
                 'class': 'form-control',
                 'type': 'date'
             }),
@@ -171,12 +167,15 @@ class OrderHeaderForm(forms.ModelForm):
             'supplier': 'المورد',
             'supplier_reference': 'رقم مرجع المورد',
             'order_date': 'تاريخ الطلب',
-            'delivery_date': 'تاريخ الاستلام المتوقع',
             'receive_date': 'تاريخ الاستلام الفعلي',
             'status': 'حالة الطلب',
             'received_by': 'الصيدلي المستلم',
             'notes': 'ملاحظات',
         }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        return cleaned_data
 
 
 class OrderItemForm(forms.ModelForm):

@@ -68,7 +68,7 @@
                     {% for item in prescription.items.all %}
                     <tr>
                         {% if forloop.first %}
-                        <td rowspan="{{ prescription.items.count }}"><strong>{{ prescription.prescription_ref }}</strong></td>
+                        <td rowspan="{{ prescription.item_count }}"><strong>{{ prescription.prescription_ref }}</strong></td>
                         {% endif %}
                         <td>{{ item.medicine.name }}</td>
                         <td>{{ item.quantity_dispensed }}</td>
