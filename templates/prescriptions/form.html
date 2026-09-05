@@ -36,6 +36,13 @@
         min-width: 100px;
         text-align: center;
     }
+    @keyframes shake {
+        0%,100% { transform: translateX(0); }
+        25% { transform: translateX(-6px); }
+        75% { transform: translateX(6px); }
+    }
+    .shake { animation: shake 0.25s ease-in-out; }
+    .code-msg { margin-right: auto; min-width: 0; }
 </style>
 {% endblock %}
 
@@ -98,10 +105,11 @@
 
     <!-- Dispensing Items -->
     <div class="table-container mb-3">
-        <div class="d-flex justify-content-between align-items-center mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
             <h6 class="mb-0 text-primary">
                 <i class="bi bi-capsule me-2"></i>الأصناف المصروفة
             </h6>
+            <div id="code-message-area" class="code-msg"></div>
             <div class="d-flex gap-2 align-items-center">
                 <input type="text" id="code-search" class="form-control code-input"
                     placeholder="أدخل الكود" autocomplete="off">
@@ -176,6 +184,26 @@
 // Medicines data from Django
 const medicines = JSON.parse('{{ medicines_json|safe }}');
 
+// ── Non-blocking code-message helper ───────────────────────
+let _codeMsgTimeout = null;
+function showCodeMessage(text, variant = 'danger') {
+    const area = document.getElementById('code-message-area');
+    if (!area) return;
+    area.innerHTML = `<div class="alert alert-${variant} py-2 px-3 mb-0 d-flex align-items-center" role="alert">
+        <i class="bi bi-${variant === 'danger' ? 'exclamation-triangle' : 'info-circle'} me-2"></i>
+        <span>${text}</span>
+    </div>`;
+    if (_codeMsgTimeout) clearTimeout(_codeMsgTimeout);
+    _codeMsgTimeout = setTimeout(() => { area.innerHTML = ''; }, 3500);
+}
+function shakeCodeInput() {
+    const inp = document.getElementById('code-search');
+    inp.classList.remove('shake');
+    // Trigger reflow to restart animation
+    void inp.offsetWidth;
+    inp.classList.add('shake');
+}
+
 // Update ref display
 function updateRefDisplay() {
     const prefix = document.getElementById('prefix-input').value;
@@ -205,12 +233,17 @@ updateRefDisplay();
 window.addEventListener('load', function() {
     const prefixInput = document.querySelector('input[name="prefix_digits"]');
     const suffixInput = document.querySelector('input[name="suffix_digits"]');
+    const isEditForm = !!document.querySelector('.item-row') || !!suffixInput.value;
     
-    // Clear suffix field on page load
-    suffixInput.value = '';
+    // Only blank the suffix field when creating a brand new prescription (not edit)
+    if (!isEditForm) {
+        suffixInput.value = '';
+    }
     
-    if (prefixInput.value.length === 3) {
+    if (prefixInput.value.length === 3 && !suffixInput.value) {
         suffixInput.focus();
+    } else if (prefixInput.value.length < 3) {
+        prefixInput.focus();
     }
 });
 
@@ -224,8 +257,14 @@ document.getElementById('code-search').addEventListener('keypress', function(e) 
 });
 
 function addItemByCode() {
-    const code = document.getElementById('code-search').value.trim();
-    if (!code) return;
+    const codeInput = document.getElementById('code-search');
+    const code = codeInput.value.trim();
+    if (!code) {
+        showCodeMessage('يرجى إدخال كود الصنف أولاً', 'warning');
+        shakeCodeInput();
+        codeInput.focus();
+        return;
+    }
 
     // Find medicine by code
     let found = null;
@@ -238,12 +277,18 @@ function addItemByCode() {
     }
 
     if (!found) {
-        alert('الكود غير موجود. يرجى التحقق والمحاولة مرة أخرى.');
+        showCodeMessage('الكود غير موجود. يرجى التحقق والمحاولة مرة أخرى', 'danger');
+        shakeCodeInput();
+        codeInput.select();
+        codeInput.focus();
         return;
     }
 
     if (found.batches.length === 0) {
-        alert('لا يوجد مخزون لهذا الصنف.');
+        showCodeMessage('لا يوجد مخزون لهذا الصنف.', 'danger');
+        shakeCodeInput();
+        codeInput.select();
+        codeInput.focus();
         return;
     }
 
@@ -302,9 +347,10 @@ function addItemByCode() {
 
     document.getElementById('items-container').appendChild(row);
 
-    // Clear code input and refocus
-    document.getElementById('code-search').value = '';
-    document.getElementById('code-search').focus();
+    // Clear code input and refocus, and brief success banner
+    showCodeMessage(`تمت إضافة ${found.name}`, 'success');
+    codeInput.value = '';
+    codeInput.focus();
 }
 
 // Remove item

@@ -1,9 +1,11 @@
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
 from django.contrib import messages
+from django.contrib.messages import get_messages
 from django.utils import timezone
 from django.db import models
-from django.db.models import Q, Sum
+from django.db.models import Count, Prefetch, Q, Sum
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.forms import formset_factory
 from django.http import JsonResponse
@@ -40,6 +42,8 @@ def paginate_queryset(request, queryset, per_page=20):
 def login_view(request):
     if request.user.is_authenticated:
         return redirect('dashboard')
+    # Do not carry failed-login or stale action messages into the dashboard.
+    list(get_messages(request))
     if request.method == 'POST':
         username = request.POST.get('username')
         password = request.POST.get('password')
@@ -47,8 +51,10 @@ def login_view(request):
         if user is not None:
             login(request, user)
             return redirect('dashboard')
-        else:
-            messages.error(request, 'اسم المستخدم أو كلمة المرور غير صحيحة')
+        return render(request, 'registration/login.html', {
+            'login_error': True,
+            'username': username,
+        })
     return render(request, 'registration/login.html')
 
 
@@ -114,8 +120,8 @@ def medicine_list(request):
         'category', flat=True
     ).distinct().order_by('category')
 
-    total = medicines.count()
     page_obj = paginate_queryset(request, medicines)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()
@@ -199,8 +205,8 @@ def supplier_list(request):
             Q(phone__icontains=search)
         )
 
-    total = suppliers.count()
     page_obj = paginate_queryset(request, suppliers)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()
@@ -280,7 +286,7 @@ def code_list(request):
 
     if selected_medicine_id:
         selected_medicine = get_object_or_404(Medicine, pk=selected_medicine_id)
-        codes = MedicineCode.objects.filter(medicine=selected_medicine)
+        codes = MedicineCode.objects.filter(medicine=selected_medicine).select_related('medicine')
 
     if search:
         medicines = medicines.filter(
@@ -295,7 +301,7 @@ def code_list(request):
             ).first()
             if code_match:
                 selected_medicine = code_match.medicine
-                codes = MedicineCode.objects.filter(medicine=selected_medicine)
+                codes = MedicineCode.objects.filter(medicine=selected_medicine).select_related('medicine')
 
     page_obj = paginate_queryset(request, codes)
     query_params = request.GET.copy()
@@ -411,7 +417,9 @@ def prescription_list(request):
     search = request.GET.get('search', '')
     date_filter = request.GET.get('date', '')
 
-    prescriptions = Prescription.objects.all().order_by('-dispensing_date', '-id')
+    prescriptions = Prescription.objects.select_related('created_by').annotate(
+        item_count=Count('items')
+    ).order_by('-dispensing_date', '-id')
 
     if search:
         prescriptions = prescriptions.filter(
@@ -421,8 +429,8 @@ def prescription_list(request):
     if date_filter:
         prescriptions = prescriptions.filter(dispensing_date=date_filter)
 
-    total = prescriptions.count()
     page_obj = paginate_queryset(request, prescriptions)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()
@@ -455,7 +463,6 @@ def prescription_add(request):
                 form.cleaned_data.get('suffix_digits', '')
             )
 
-            # Check if items were added via JavaScript (from POST data)
             medicine_ids = request.POST.getlist('item_medicine[]')
             
             if not medicine_ids:
@@ -469,12 +476,13 @@ def prescription_add(request):
                 prescription.updated_by = request.user
                 prescription.save()
 
-                _process_dispensing_items(request, prescription)
-
-                messages.success(request, f'تم حفظ التذكرة {prescription.prescription_ref} بنجاح')
-                # Redirect to new prescription with same prefix
-                prefix = form.cleaned_data.get('prefix_digits', '')
-                return redirect(f'/prescriptions/add/?prefix={prefix}')
+                ok = _process_dispensing_items(request, prescription)
+                if not ok:
+                    prescription.delete()
+                else:
+                    messages.success(request, f'تم حفظ التذكرة {prescription.prescription_ref} بنجاح')
+                    prefix = form.cleaned_data.get('prefix_digits', '')
+                    return redirect(f'/prescriptions/add/?prefix={prefix}')
     else:
         form = PrescriptionForm(initial={
             'dispensing_date': today,
@@ -501,31 +509,44 @@ def prescription_edit(request, pk):
         if form.is_valid():
             prescription_ref = form.cleaned_data['prescription_ref']
 
-            # Check for duplicate excluding current
             if Prescription.objects.filter(
                 prescription_ref=prescription_ref
             ).exclude(pk=pk).exists():
                 messages.error(request, f'رقم التذكرة {prescription_ref} مستخدم بالفعل')
             else:
-                # Restore stock for existing items
-                _restore_stock(prescription)
+                # Snapshot existing items BEFORE any mutation
+                existing_items_snapshot = list(prescription.items.select_related(
+                    'medicine', 'batch'
+                ).all())
 
-                # Delete existing items
-                prescription.items.all().delete()
+                # 1. VALIDATE NEW ITEMS FIRST — zero DB side effects
+                parsed, errors = _validate_dispensing_items(
+                    request, prescription_snapshot=existing_items_snapshot
+                )
+                if errors:
+                    # Validation failed: re-render form, PRESERVE existing prescription
+                    return render(request, 'prescriptions/form.html', {
+                        'form': form,
+                        'title': f'تعديل التذكرة: {prescription_ref}',
+                        'prescription': prescription,
+                        'existing_items': existing_items_snapshot,
+                        'medicines_json': _get_medicines_json(),
+                    })
 
-                # Update prescription
+                # 2. Validation OK — now it's safe to mutate
+                flagged_items = _restore_stock(prescription)
+                for existing in flagged_items:
+                    existing.delete()
+
                 prescription = form.save(commit=False)
                 prescription.prescription_ref = prescription_ref
                 prescription.updated_by = request.user
                 prescription.save()
 
-                # Process new dispensing items
-                _process_dispensing_items(request, prescription)
-
+                _apply_dispensing_items(request, prescription, parsed)
                 messages.success(request, f'تم تحديث التذكرة {prescription_ref} بنجاح')
                 return redirect('prescription_list')
     else:
-        # Pre-populate prefix and suffix
         ref = prescription.prescription_ref
         form = PrescriptionForm(instance=prescription, initial={
             'prefix_digits': ref[:3] if len(ref) >= 3 else ref,
@@ -547,8 +568,9 @@ def prescription_delete(request, pk):
     if request.method == 'POST':
         ref = prescription.prescription_ref
         try:
-            _restore_stock(prescription)
-            prescription.items.all().delete()
+            flagged_items = _restore_stock(prescription)
+            for item in flagged_items:
+                item.delete()
             prescription.delete()
             messages.success(request, f'تم حذف التذكرة {ref} بنجاح')
         except Exception:
@@ -559,80 +581,201 @@ def prescription_delete(request, pk):
 
 def _get_medicines_json():
     """Returns medicines with their codes and available batches as JSON"""
-    medicines = []
-    for medicine in Medicine.objects.all().order_by('id'):
-        codes = list(medicine.codes.values_list('code', flat=True))
+    medicines = Medicine.objects.all().order_by('id').prefetch_related(
+        Prefetch(
+            'codes',
+            queryset=MedicineCode.objects.only('medicine_id', 'code'),
+            to_attr='prefetched_codes',
+        ),
+        Prefetch(
+            'batches',
+            queryset=Batch.objects.filter(
+                quantity_remaining__gt=0
+            ).only(
+                'id', 'medicine_id', 'batch_number',
+                'expiry_date', 'quantity_remaining',
+            ).order_by('expiry_date'),
+            to_attr='available_batches',
+        ),
+    )
+    medicines_json = []
+    for medicine in medicines:
+        codes = [code.code for code in medicine.prefetched_codes]
         batches = []
-        for batch in medicine.batches.filter(
-            quantity_remaining__gt=0
-        ).order_by('expiry_date'):
+        for batch in medicine.available_batches:
             batches.append({
                 'id': batch.id,
                 'batch_number': batch.batch_number,
                 'expiry_date': str(batch.expiry_date),
                 'quantity_remaining': batch.quantity_remaining,
             })
-        medicines.append({
+        medicines_json.append({
             'id': medicine.id,
             'name': medicine.name,
             'codes': codes,
             'default_qty': medicine.default_dispense_qty or 1,
             'batches': batches,
         })
-    return json.dumps(medicines, ensure_ascii=False)
+    return json.dumps(medicines_json, ensure_ascii=False)
 
 
-def _process_dispensing_items(request, prescription):
-    """Process dispensing items from POST data"""
+def _validate_dispensing_items(request, prescription_snapshot=None):
+    """Return (parsed_list, errors) for dispensing items in POST — zero mutations.
+
+    prescription_snapshot is the *existing* items QuerySet (edit case). When
+    supplied, validation accounts for edits (old qty restored before the new
+    qty is applied) so net-change checks match reality at apply time.
+    """
     medicine_ids = request.POST.getlist('item_medicine[]')
     batch_ids = request.POST.getlist('item_batch[]')
     quantities = request.POST.getlist('item_quantity[]')
+
+    parsed = []
+    errors = []
 
     for i in range(len(medicine_ids)):
         try:
             medicine_id = int(medicine_ids[i])
             batch_id = int(batch_ids[i])
             quantity = int(quantities[i])
-
-            if quantity <= 0:
-                continue
-
-            medicine = Medicine.objects.get(pk=medicine_id)
-            batch = Batch.objects.get(pk=batch_id)
-
-            # Create dispensing item
-            DispensingItem.objects.create(
-                prescription=prescription,
-                medicine=medicine,
-                batch=batch,
-                quantity_dispensed=quantity,
-                created_by=request.user,
-                updated_by=request.user,
-            )
-
-            # Update batch quantity remaining
-            Batch.objects.filter(pk=batch_id).update(
-                quantity_remaining=models.F('quantity_remaining') - quantity
-            )
-
-            # Update medicine current stock
-            Medicine.objects.filter(pk=medicine_id).update(
-                current_stock=models.F('current_stock') - quantity
-            )
-
-        except (ValueError, Medicine.DoesNotExist, Batch.DoesNotExist):
+        except (ValueError, IndexError):
             continue
+        if quantity <= 0:
+            errors.append(f'السطر {i + 1}: الكمية المصروفة يجب أن تكون أكبر من الصفر')
+            continue
+        parsed.append((medicine_id, batch_id, quantity, i + 1))
+
+    # Build "net deltas" for the new items (used to compare against available stock)
+    # For the edit case, an item might switch batch / change qty. So we compute
+    # for each (medicine, batch) the net change = new_qty - old_qty. When no
+    # old qty exists for that batch, the delta is just new_qty.
+    old_batch_qty = {}  # (batch_id) -> quantity_dispensed
+    old_med_qty = {}    # (medicine_id) -> quantity_dispensed
+    if prescription_snapshot is not None:
+        for item in prescription_snapshot:
+            bid = getattr(item, 'batch_id', None)
+            mid = getattr(item, 'medicine_id', None)
+            q = item.quantity_dispensed or 0
+            if bid is not None:
+                old_batch_qty[bid] = old_batch_qty.get(bid, 0) + q
+            if mid is not None:
+                old_med_qty[mid] = old_med_qty.get(mid, 0) + q
+
+    new_batch_qty = {}
+    new_med_qty = {}
+    for medicine_id, batch_id, quantity, _line_no in parsed:
+        new_batch_qty[batch_id] = new_batch_qty.get(batch_id, 0) + quantity
+        new_med_qty[medicine_id] = new_med_qty.get(medicine_id, 0) + quantity
+
+    # Net change: positive means MORE stock consumed than before (more risky)
+    # We check: new_qty_for_this_batch <= old_qty_for_this_batch + batch.remaining
+    # Because at apply-time we will first restore the old then subtract the new.
+    medicines_by_id = Medicine.objects.in_bulk(new_med_qty)
+    batches_by_id = Batch.objects.in_bulk(new_batch_qty)
+
+    # ── Pass 1: Validate every item (no mutations yet) ──────────────────
+    for medicine_id, batch_id, quantity, line_no in parsed:
+        medicine = medicines_by_id.get(medicine_id)
+        if medicine is None:
+            errors.append(f'الصنف في السطر {line_no} غير موجود')
+            continue
+        batch = batches_by_id.get(batch_id)
+        if batch is None:
+            errors.append(f'التشغيلة في السطر {line_no} غير موجودة')
+            continue
+        if batch.medicine_id != medicine_id:
+            errors.append(
+                f'السطر {line_no}: التشغيلة {batch.batch_number} '
+                f'لا تنتمي إلى الصنف {medicine.name}'
+            )
+            continue
+        if quantity > old_batch_qty.get(batch_id, 0) + batch.quantity_remaining:
+            errors.append(
+                f'السطر {line_no}: الكمية المطلوبة ({quantity}) '
+                f'تتجاوز المتوفر في التشغيلة ({batch.quantity_remaining}) '
+                f'للصنف {medicine.name}'
+            )
+            continue
+        if quantity > old_med_qty.get(medicine_id, 0) + medicine.current_stock:
+            errors.append(
+                f'السطر {line_no}: الكمية المطلوبة ({quantity}) '
+                f'تتجاوز المخزون الحالي ({medicine.current_stock}) '
+                f'للصنف {medicine.name}'
+            )
+
+    if errors:
+        for msg in errors:
+            messages.error(request, msg)
+    return parsed, errors
+
+
+def _apply_dispensing_items(request, prescription, parsed):
+    """Apply items previously validated by _validate_dispensing_items().
+
+    NOTE: callers MUST have already restored old stock & deleted old items
+          (if editing) before invoking this.
+    """
+    medicines_by_id = Medicine.objects.in_bulk({item[0] for item in parsed})
+    batches_by_id = Batch.objects.in_bulk({item[1] for item in parsed})
+
+    for medicine_id, batch_id, quantity, _line_no in parsed:
+        medicine = medicines_by_id.get(medicine_id)
+        batch = batches_by_id.get(batch_id)
+        if medicine is None or batch is None:
+            continue
+
+        dispensing_item = DispensingItem(
+            prescription=prescription,
+            medicine=medicine,
+            batch=batch,
+            quantity_dispensed=quantity,
+            created_by=request.user,
+            updated_by=request.user,
+        )
+        dispensing_item._skip_stock_signal = True
+        dispensing_item.save()
+
+        Batch.objects.filter(pk=batch_id).update(
+            quantity_remaining=models.F('quantity_remaining') - quantity
+        )
+        Medicine.objects.filter(pk=medicine_id).update(
+            current_stock=models.F('current_stock') - quantity
+        )
+    return True
+
+
+def _process_dispensing_items(request, prescription):
+    """Legacy wrapper used by prescription_add (prescription is brand new,
+    no existing items — snapshot is empty).
+    """
+    parsed, errors = _validate_dispensing_items(request, prescription_snapshot=[])
+    if errors:
+        return False
+    return _apply_dispensing_items(request, prescription, parsed)
 
 
 def _restore_stock(prescription):
-    """Restore stock when editing or deleting a prescription"""
-    for item in prescription.items.all():
-        Batch.objects.filter(pk=item.batch.pk).update(
-            quantity_remaining=models.F('quantity_remaining') + item.quantity_dispensed
-        )
-        Medicine.objects.filter(pk=item.medicine.pk).update(
-            current_stock=models.F('current_stock') + item.quantity_dispensed
-        )
+    """Restore stock when editing or deleting a prescription.
+
+    Returns the list of item instances so callers can delete them with
+    the _skip_stock_signal flag already set (prevents post_delete signals
+    from double-restoring).
+    """
+    items = list(prescription.items.all())
+    for item in items:
+        qty = item.quantity_dispensed or 0
+        if qty <= 0:
+            continue
+        if item.batch_id:
+            Batch.objects.filter(pk=item.batch_id).update(
+                quantity_remaining=models.F('quantity_remaining') + qty
+            )
+        if item.medicine_id:
+            Medicine.objects.filter(pk=item.medicine_id).update(
+                current_stock=models.F('current_stock') + qty
+            )
+        item._skip_stock_signal = True
+    return items
 
 
 # ─── PURCHASE ORDERS ─────────────────────────────────────────
@@ -642,7 +785,9 @@ def order_list(request):
     status_filter = request.GET.get('status', '')
     search = request.GET.get('search', '')
 
-    orders = OrderHeader.objects.all().order_by('-order_date', '-id')
+    orders = OrderHeader.objects.select_related(
+        'supplier', 'received_by', 'created_by'
+    ).order_by('-order_date', '-id')
 
     if status_filter:
         orders = orders.filter(status=status_filter)
@@ -654,8 +799,8 @@ def order_list(request):
             Q(supplier_reference__icontains=search)
         )
 
-    total = orders.count()
     page_obj = paginate_queryset(request, orders)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()
@@ -744,6 +889,7 @@ def order_edit(request, pk):
     OrderItemFormSet = get_order_item_formset(extra=1)
 
     if request.method == 'POST':
+        previous_status = order.status
         form = OrderHeaderForm(request.POST, instance=order)
         formset = OrderItemFormSet(request.POST, prefix='items')
 
@@ -752,14 +898,17 @@ def order_edit(request, pk):
             order.updated_by = request.user
             order.save()
 
-            order.items.all().delete()
+            _restore_order_stock(order, was_delivered=(previous_status == 'Delivered'))
+
+            for existing in order.items.all():
+                existing._skip_stock_signal = True
+                existing.delete()
             _save_order_items(order, formset)
 
             messages.success(request, f'تم تحديث الطلب {order.po_number} بنجاح')
             return redirect('order_list')
     else:
         form = OrderHeaderForm(instance=order)
-        # Pre-populate formset with existing items
         initial_data = []
         for item in order.items.all():
             initial_data.append({
@@ -778,6 +927,8 @@ def order_edit(request, pk):
         'formset': formset,
         'title': f'تعديل الطلب: {order.po_number}',
         'order': order,
+        'form_errors': [str(error) for error in form.errors.values()],
+        'formset_errors': [str(error) for error in formset.errors],
     })
 
 
@@ -806,7 +957,7 @@ def _save_order_items(order, formset):
         if not medicine:
             continue
 
-        item = OrderItem.objects.create(
+        item = OrderItem(
             order=order,
             medicine=medicine,
             quantity_ordered=quantity_ordered,
@@ -816,9 +967,10 @@ def _save_order_items(order, formset):
             expiry_date=expiry_date,
         )
         item.total_cost = item.quantity_received * item.unit_cost if item.quantity_received and item.unit_cost else None
-        item.save(update_fields=['total_cost'])
+        item._skip_stock_signal = True
+        item.save()
 
-        if quantity_received > 0:
+        if order.status == 'Delivered' and quantity_received > 0:
             _create_batch_and_update_stock(item, order)
             saved_items += 1
 
@@ -831,7 +983,10 @@ def order_delete(request, pk):
     if request.method == 'POST':
         po_number = order.po_number
         try:
-            order.items.all().delete()
+            _restore_order_stock(order, was_delivered=(order.status == 'Delivered'))
+            for item in order.items.all():
+                item._skip_stock_signal = True
+                item.delete()
             order.delete()
             messages.success(request, f'تم حذف الطلب {po_number} بنجاح')
         except Exception:
@@ -840,28 +995,80 @@ def order_delete(request, pk):
     return render(request, 'orders/delete.html', {'order': order})
 
 
-def _create_batch_and_update_stock(item, order):
-    """Helper function to create batch record and update stock"""
-    # Check if batch already exists
-    if item.batch_number:
-        exists = Batch.objects.filter(
-            batch_number=item.batch_number,
-            medicine=item.medicine
-        ).exists()
-        if exists:
-            return
+def _restore_order_stock(order, was_delivered=True):
+    """Reverse batch & medicine stock updates created by an order's received items."""
+    if not was_delivered:
+        return
+    for item in order.items.all():
+        qty = item.quantity_received or 0
+        if qty <= 0 or not item.medicine_id:
+            continue
 
-    # Create batch
-    Batch.objects.create(
-        medicine=item.medicine,
-        batch_number=item.batch_number or 'N/A',
-        expiry_date=item.expiry_date or timezone.now().date(),
-        quantity_received=item.quantity_received,
-        quantity_remaining=item.quantity_received,
-        date_received=order.delivery_date or timezone.now().date(),
+        Medicine.objects.filter(pk=item.medicine_id).update(
+            current_stock=models.F('current_stock') - qty
+        )
+
+        if item.batch_number:
+            batch = Batch.objects.filter(
+                medicine_id=item.medicine_id,
+                batch_number=item.batch_number,
+            ).first()
+            if batch:
+                new_remaining = batch.quantity_remaining - qty
+                new_received = batch.quantity_received - qty
+                if new_remaining <= 0 and new_received <= 0:
+                    batch._skip_stock_signal = True
+                    batch.delete()
+                else:
+                    Batch.objects.filter(pk=batch.pk).update(
+                        quantity_remaining=max(0, new_remaining),
+                        quantity_received=max(0, new_received),
+                    )
+        Medicine.objects.get(pk=item.medicine_id).recompute_current_stock()
+
+
+def _create_batch_and_update_stock(item, order):
+    """Helper function to create batch record and update stock.
+
+    If the batch already exists (same batch_number + medicine), the new
+    quantity is *added* to the existing batch.
+
+    Batch.date_received is always set to the order's effective_receive_date
+    (receive_date when the PO is marked Delivered, otherwise order_date) —
+    this ensures stock-movement reports match the physical receipt date.
+    """
+    received_on = getattr(order, 'effective_receive_date', None) or (
+        order.receive_date or order.order_date or timezone.now().date()
     )
 
-    # Update current stock
+    batch_id = None
+    if item.batch_number:
+        existing = Batch.objects.filter(
+            batch_number=item.batch_number,
+            medicine=item.medicine,
+        ).first()
+        if existing:
+            batch_id = existing.pk
+            Batch.objects.filter(pk=existing.pk).update(
+                quantity_received=models.F('quantity_received') + item.quantity_received,
+                quantity_remaining=models.F('quantity_remaining') + item.quantity_received,
+                date_received=received_on,  # Always (re)set to match order
+            )
+
+    if batch_id is None:
+        batch = Batch(
+            medicine=item.medicine,
+            batch_number=item.batch_number or 'N/A',
+            expiry_date=item.expiry_date or timezone.now().date(),
+            quantity_received=item.quantity_received,
+            quantity_remaining=item.quantity_received,
+            date_received=received_on,
+            created_by=order.created_by,
+            updated_by=order.updated_by,
+        )
+        batch._skip_stock_signal = True
+        batch.save()
+
     Medicine.objects.filter(pk=item.medicine.pk).update(
         current_stock=models.F('current_stock') + item.quantity_received
     )
@@ -873,7 +1080,7 @@ def _create_batch_and_update_stock(item, order):
 def report_stock_movement(request):
     today = timezone.now().date()
     start_date = request.GET.get('from', '')
-    end_date = request.GET.get('to', '')
+    end_date = request.GET.get('to', '') or today
     category_filter = request.GET.get('category', '')
 
     medicines = Medicine.objects.all().order_by('category', 'id')
@@ -881,66 +1088,83 @@ def report_stock_movement(request):
         medicines = medicines.filter(category__icontains=category_filter)
 
     categories = Medicine.objects.values_list('category', flat=True).distinct().order_by('category')
+    medicine_ids = list(medicines.values_list('id', flat=True))
+
+    def _purchase_totals(start=None, end=None, end_exclusive=False):
+        queryset = OrderItem.objects.filter(
+            medicine_id__in=medicine_ids,
+            order__status='Delivered',
+        ).annotate(
+            effective=models.Case(
+                models.When(order__receive_date__isnull=False,
+                            then=models.F('order__receive_date')),
+                default=models.F('order__order_date'),
+                output_field=models.DateField(),
+            )
+        )
+        if start is not None:
+            queryset = queryset.filter(effective__gte=start)
+        if end is not None:
+            queryset = queryset.filter(
+                effective__lt=end if end_exclusive else end
+            )
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('quantity_received')
+            )
+        }
+
+    def _dispensing_totals(start=None, end=None, end_exclusive=False):
+        queryset = DispensingItem.objects.filter(medicine_id__in=medicine_ids)
+        if start is not None:
+            queryset = queryset.filter(prescription__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'prescription__dispensing_date__lt' if end_exclusive else 'prescription__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('quantity_dispensed')
+            )
+        }
+
+    if start_date:
+        purchases_in_range = _purchase_totals(start=start_date, end=end_date)
+        dispensed_in_range = _dispensing_totals(start=start_date, end=end_date)
+        purchases_before = _purchase_totals(end=start_date, end_exclusive=True)
+        dispensed_before = _dispensing_totals(end=start_date, end_exclusive=True)
+    else:
+        purchases_in_range = _purchase_totals(end=end_date)
+        dispensed_in_range = _dispensing_totals(end=end_date)
+        purchases_before = {}
+        dispensed_before = {}
+
+    medicines = medicines.prefetch_related(Prefetch(
+        'batches',
+        queryset=Batch.objects.filter(
+            quantity_remaining__gt=0
+        ).only('medicine_id', 'expiry_date', 'batch_number').order_by('expiry_date'),
+        to_attr='available_batches',
+    ))
     rows = []
 
     for medicine in medicines:
-        purchases_in_range = 0
-        dispensed_in_range = 0
-        opening_stock = 0
-        closing_stock = 0
+        purchased = purchases_in_range.get(medicine.id, 0)
+        dispensed = dispensed_in_range.get(medicine.id, 0)
+        opening_stock = purchases_before.get(medicine.id, 0) - dispensed_before.get(medicine.id, 0)
+        closing_stock = opening_stock + purchased - dispensed
 
-        if start_date:
-            purchases_in_range = OrderItem.objects.filter(
-                medicine=medicine,
-                order__status='Delivered',
-                order__order_date__gte=start_date,
-                order__order_date__lte=end_date or today
-            ).aggregate(total=Sum('quantity_received'))['total'] or 0
-
-            dispensed_in_range = DispensingItem.objects.filter(
-                medicine=medicine,
-                prescription__dispensing_date__gte=start_date,
-                prescription__dispensing_date__lte=end_date or today
-            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
-
-            purchases_before = OrderItem.objects.filter(
-                medicine=medicine,
-                order__status='Delivered',
-                order__order_date__lt=start_date
-            ).aggregate(total=Sum('quantity_received'))['total'] or 0
-
-            dispensed_before = DispensingItem.objects.filter(
-                medicine=medicine,
-                prescription__dispensing_date__lt=start_date
-            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
-
-            opening_stock = purchases_before - dispensed_before
-            closing_stock = opening_stock + purchases_in_range - dispensed_in_range
-        else:
-            purchases_in_range = OrderItem.objects.filter(
-                medicine=medicine,
-                order__status='Delivered',
-                order__order_date__lte=end_date or today
-            ).aggregate(total=Sum('quantity_received'))['total'] or 0
-
-            dispensed_in_range = DispensingItem.objects.filter(
-                medicine=medicine,
-                prescription__dispensing_date__lte=end_date or today
-            ).aggregate(total=Sum('quantity_dispensed'))['total'] or 0
-
-            opening_stock = 0
-            closing_stock = opening_stock + purchases_in_range - dispensed_in_range
-
-        if purchases_in_range == 0 and dispensed_in_range == 0:
+        if purchased == 0 and dispensed == 0:
             continue
 
-        nearest_batch = medicine.batches.filter(quantity_remaining__gt=0).order_by('expiry_date').first()
+        nearest_batch = medicine.available_batches[0] if medicine.available_batches else None
         rows.append({
             'medicine': medicine,
             'opening_stock': opening_stock,
-            'purchased': purchases_in_range,
-            'total': opening_stock + purchases_in_range,
-            'dispensed': dispensed_in_range,
+            'purchased': purchased,
+            'total': opening_stock + purchased,
+            'dispensed': dispensed,
             'closing_stock': closing_stock,
             'nearest_expiry': nearest_batch.expiry_date if nearest_batch else None,
             'nearest_batch_number': nearest_batch.batch_number if nearest_batch else '—',
@@ -976,7 +1200,7 @@ def report_expiry(request):
         expiry_date__gte=today,
         expiry_date__lte=six_months,
         quantity_remaining__gt=0
-    ).order_by('expiry_date')
+    ).select_related('medicine').order_by('expiry_date')
     return render(request, 'reports/expiry.html', {
         'batches': batches,
         'today': today,
@@ -1060,6 +1284,11 @@ def report_daily_dispensing(request):
 
     prescriptions = Prescription.objects.filter(
         dispensing_date=selected_date
+    ).annotate(item_count=Count('items')).prefetch_related(
+        Prefetch(
+            'items',
+            queryset=DispensingItem.objects.select_related('medicine'),
+        )
     ).order_by('prescription_ref')
 
     return render(request, 'reports/daily_dispensing.html', {
@@ -1075,7 +1304,7 @@ def user_list(request):
     search = request.GET.get('search', '')
     role_filter = request.GET.get('role', '')
 
-    users = User.objects.all().order_by('username')
+    users = User.objects.select_related('profile').order_by('username')
 
     if search:
         users = users.filter(
@@ -1088,8 +1317,8 @@ def user_list(request):
     if role_filter:
         users = users.filter(profile__role=role_filter)
 
-    total = users.count()
     page_obj = paginate_queryset(request, users)
+    total = page_obj.paginator.count
     query_params = request.GET.copy()
     query_params.pop('page', None)
     query_string = query_params.urlencode()

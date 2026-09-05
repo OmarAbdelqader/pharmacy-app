@@ -38,7 +38,7 @@ class OrderItemInline(admin.TabularInline):
 
 @admin.register(OrderHeader)
 class OrderHeaderAdmin(admin.ModelAdmin):
-    list_display = ['po_number', 'supplier', 'order_date', 'status', 'delivery_date']
+    list_display = ['po_number', 'supplier', 'order_date', 'status', 'receive_date']
     search_fields = ['po_number', 'supplier__name']
     list_filter = ['status']
     inlines = [OrderItemInline]

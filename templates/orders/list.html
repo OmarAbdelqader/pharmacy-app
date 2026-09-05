@@ -61,7 +61,6 @@
                     <th>المورد</th>
                     <th>رقم مرجع المورد</th>
                     <th>تاريخ الطلب</th>
-                    <th>تاريخ الاستلام</th>
                     <th>الحالة</th>
                     <th>الصيدلي المستلم</th>
                     <th>إجراءات</th>
@@ -74,7 +73,6 @@
                     <td>{{ order.supplier.name }}</td>
                     <td>{{ order.supplier_reference|default:"—" }}</td>
                     <td>{{ order.order_date }}</td>
-                    <td>{{ order.delivery_date|default:"—" }}</td>
                     <td>
                         {% if order.status == 'Pending' %}
                         <span class="badge bg-warning text-dark">قيد الانتظار</span>
