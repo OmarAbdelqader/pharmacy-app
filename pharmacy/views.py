@@ -4,15 +4,24 @@ from django.contrib.auth.models import User
 from django.contrib import messages
 from django.contrib.messages import get_messages
 from django.utils import timezone
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Count, Prefetch, Q, Sum
+from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.forms import formset_factory
 from django.http import JsonResponse
 from datetime import timedelta
 from .decorators import login_required_custom, admin_required
-from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem, Prescription, DispensingItem, UserProfile
-from .forms import MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm, OrderItemForm, PrescriptionForm, DispensingItemForm, UserForm, UserProfileForm, PasswordResetForm
+from .models import (
+    Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem,
+    Prescription, DispensingItem, InternalDispensing,
+    InternalDispensingItem, UserProfile,
+)
+from .forms import (
+    MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm,
+    OrderItemForm, PrescriptionForm, DispensingItemForm,
+    InternalDispensingForm, UserForm, UserProfileForm, PasswordResetForm,
+)
 import json
 
 from django.views.decorators.csrf import csrf_exempt
@@ -778,6 +787,194 @@ def _restore_stock(prescription):
     return items
 
 
+# ─── INTERNAL DISPENSING ────────────────────────────────────
+
+@login_required_custom
+def internal_dispensing_list(request):
+    date_filter = request.GET.get('date', '')
+    records = InternalDispensing.objects.select_related(
+        'destination_medicine', 'created_by'
+    ).annotate(item_count=Count('items')).order_by('-dispensing_date', '-id')
+    if date_filter:
+        records = records.filter(dispensing_date=date_filter)
+    page_obj = paginate_queryset(request, records)
+    return render(request, 'internal_dispensing/list.html', {
+        'records': page_obj,
+        'date_filter': date_filter,
+        'page_obj': page_obj,
+    })
+
+
+def _parse_internal_dispensing_items(request):
+    medicine_ids = request.POST.getlist('item_medicine[]')
+    batch_ids = request.POST.getlist('item_batch[]')
+    destination_medicine_ids = request.POST.getlist('item_destination_medicine[]')
+    quantities = request.POST.getlist('item_quantity[]')
+    parsed = []
+    errors = []
+
+    for index in range(max(len(medicine_ids), len(batch_ids), len(quantities))):
+        try:
+            medicine_id = int(medicine_ids[index])
+            batch_id = int(batch_ids[index])
+            destination_value = destination_medicine_ids[index] if index < len(destination_medicine_ids) else ''
+            if not destination_value and request.POST.get('destination_type') == 'internal':
+                destination_value = request.POST.get('destination_medicine', '')
+            destination_medicine_id = int(destination_value) if destination_value else None
+            quantity = int(quantities[index])
+        except (ValueError, IndexError):
+            errors.append(f'السطر {index + 1} غير مكتمل')
+            continue
+        if quantity <= 0:
+            errors.append(f'السطر {index + 1}: يجب أن تكون الكمية أكبر من الصفر')
+            continue
+        parsed.append((medicine_id, batch_id, destination_medicine_id, quantity, index + 1))
+
+    return parsed, errors
+
+
+def _restore_internal_dispensing_stock(dispensing):
+    for item in dispensing.items.select_related('destination_batch').all():
+        quantity = item.quantity_dispensed or 0
+        destination_batch = item.destination_batch if item.destination_batch_id else None
+        destination_medicine_id = item.destination_medicine_id
+        Batch.objects.filter(pk=item.batch_id).update(
+            quantity_remaining=models.F('quantity_remaining') + quantity
+        )
+        Medicine.objects.filter(pk=item.medicine_id).update(
+            current_stock=models.F('current_stock') + quantity
+        )
+        if destination_batch and destination_medicine_id:
+            Batch.objects.filter(pk=destination_batch.pk).update(
+                quantity_received=models.F('quantity_received') - quantity,
+                quantity_remaining=models.F('quantity_remaining') - quantity,
+            )
+            Medicine.objects.filter(pk=destination_medicine_id).update(
+                current_stock=models.F('current_stock') - quantity
+            )
+        item._skip_stock_signal = True
+        item.delete()
+        if destination_batch:
+            destination_batch.refresh_from_db()
+            if destination_batch.quantity_received <= 0:
+                destination_batch.delete()
+
+
+def _apply_internal_dispensing_items(request, dispensing, parsed):
+    source_batch_totals = {}
+    medicine_ids = set()
+    destination_medicine_ids = set()
+    for medicine_id, batch_id, destination_medicine_id, quantity, _line_no in parsed:
+        source_batch_totals[batch_id] = source_batch_totals.get(batch_id, 0) + quantity
+        medicine_ids.add(medicine_id)
+        if destination_medicine_id:
+            destination_medicine_ids.add(destination_medicine_id)
+
+    batches = {
+        batch.pk: batch for batch in Batch.objects.select_for_update().filter(
+            pk__in=source_batch_totals
+        )
+    }
+    medicines = Medicine.objects.in_bulk(medicine_ids | destination_medicine_ids)
+    for medicine_id, batch_id, destination_medicine_id, _quantity, line_no in parsed:
+        batch = batches.get(batch_id)
+        if medicine_id not in medicines or not batch:
+            raise ValidationError(f'السطر {line_no}: الصنف أو التشغيلة غير موجودة')
+        if batch.medicine_id != medicine_id:
+            raise ValidationError(f'السطر {line_no}: التشغيلة لا تنتمي إلى الصنف المحدد')
+        if destination_medicine_id and destination_medicine_id not in medicines:
+            raise ValidationError(f'السطر {line_no}: صنف الوجهة غير موجود')
+
+    for batch_id, quantity in source_batch_totals.items():
+        updated = Batch.objects.filter(
+            pk=batch_id,
+            quantity_remaining__gte=quantity,
+        ).update(quantity_remaining=models.F('quantity_remaining') - quantity)
+        if updated != 1:
+            raise ValidationError('الكمية المطلوبة تتجاوز المتوفر في إحدى التشغيلات')
+
+    for medicine_id, batch_id, destination_medicine_id, quantity, _line_no in parsed:
+        source_batch = batches[batch_id]
+        Medicine.objects.filter(pk=medicine_id).update(
+            current_stock=models.F('current_stock') - quantity
+        )
+        destination_batch = None
+        if destination_medicine_id:
+            destination_batch = Batch.objects.select_for_update().filter(
+                medicine_id=destination_medicine_id,
+                batch_number=source_batch.batch_number,
+                expiry_date=source_batch.expiry_date,
+            ).first()
+            if destination_batch:
+                Batch.objects.filter(pk=destination_batch.pk).update(
+                    quantity_received=models.F('quantity_received') + quantity,
+                    quantity_remaining=models.F('quantity_remaining') + quantity,
+                )
+            else:
+                destination_batch = Batch(
+                    medicine_id=destination_medicine_id,
+                    batch_number=source_batch.batch_number,
+                    expiry_date=source_batch.expiry_date,
+                    quantity_received=quantity,
+                    quantity_remaining=quantity,
+                    date_received=dispensing.dispensing_date,
+                    created_by=request.user,
+                    updated_by=request.user,
+                )
+                destination_batch._skip_stock_signal = True
+                destination_batch.save()
+            Medicine.objects.filter(pk=destination_medicine_id).update(
+                current_stock=models.F('current_stock') + quantity
+            )
+        InternalDispensingItem.objects.create(
+            dispensing=dispensing,
+            medicine=medicines[medicine_id],
+            batch=source_batch,
+            destination_medicine=medicines.get(destination_medicine_id),
+            destination_batch=destination_batch,
+            quantity_dispensed=quantity,
+            created_by=request.user,
+            updated_by=request.user,
+        )
+
+
+@login_required_custom
+def internal_dispensing_add(request):
+    today = timezone.now().date()
+    if request.method == 'POST':
+        form = InternalDispensingForm(request.POST)
+        parsed, item_errors = _parse_internal_dispensing_items(request)
+        if form.is_valid() and not item_errors and not parsed:
+            item_errors.append('يجب إضافة صنف واحد على الأقل')
+
+        if form.is_valid() and not item_errors:
+            try:
+                with transaction.atomic():
+                    dispensing = form.save(commit=False)
+                    dispensing.created_by = request.user
+                    dispensing.updated_by = request.user
+                    dispensing.save()
+                    _apply_internal_dispensing_items(request, dispensing, parsed)
+                messages.success(request, f'تم حفظ المنصرف الداخلي {dispensing.dispensing_ref} بنجاح')
+                return redirect('internal_dispensing_list')
+            except ValidationError as exc:
+                for message in exc.messages:
+                    messages.error(request, message)
+        else:
+            for message in item_errors:
+                messages.error(request, message)
+    else:
+        form = InternalDispensingForm(initial={'dispensing_date': today})
+
+    return render(request, 'internal_dispensing/form.html', {
+        'form': form,
+        'title': 'إضافة منصرف داخلي',
+        'today': today,
+        'medicines': Medicine.objects.all(),
+        'medicines_json': _get_medicines_json(),
+    })
+
+
 # ─── PURCHASE ORDERS ─────────────────────────────────────────
 
 @login_required_custom
@@ -1129,16 +1326,54 @@ def report_stock_movement(request):
             )
         }
 
+    def _internal_dispensed_totals(start=None, end=None, end_exclusive=False):
+        queryset = InternalDispensingItem.objects.filter(medicine_id__in=medicine_ids)
+        if start is not None:
+            queryset = queryset.filter(dispensing__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'dispensing__dispensing_date__lt' if end_exclusive else 'dispensing__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('quantity_dispensed')
+            )
+        }
+
+    def _internal_received_totals(start=None, end=None, end_exclusive=False):
+        queryset = InternalDispensingItem.objects.filter(
+            destination_medicine_id__in=medicine_ids,
+        )
+        if start is not None:
+            queryset = queryset.filter(dispensing__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'dispensing__dispensing_date__lt' if end_exclusive else 'dispensing__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['destination_medicine_id']: row['total'] or 0
+            for row in queryset.values('destination_medicine_id').annotate(
+                total=Sum('quantity_dispensed')
+            )
+        }
+
     if start_date:
         purchases_in_range = _purchase_totals(start=start_date, end=end_date)
         dispensed_in_range = _dispensing_totals(start=start_date, end=end_date)
+        internal_dispensed_in_range = _internal_dispensed_totals(start=start_date, end=end_date)
+        internal_received_in_range = _internal_received_totals(start=start_date, end=end_date)
         purchases_before = _purchase_totals(end=start_date, end_exclusive=True)
         dispensed_before = _dispensing_totals(end=start_date, end_exclusive=True)
+        internal_dispensed_before = _internal_dispensed_totals(end=start_date, end_exclusive=True)
+        internal_received_before = _internal_received_totals(end=start_date, end_exclusive=True)
     else:
         purchases_in_range = _purchase_totals(end=end_date)
         dispensed_in_range = _dispensing_totals(end=end_date)
+        internal_dispensed_in_range = _internal_dispensed_totals(end=end_date)
+        internal_received_in_range = _internal_received_totals(end=end_date)
         purchases_before = {}
         dispensed_before = {}
+        internal_dispensed_before = {}
+        internal_received_before = {}
 
     medicines = medicines.prefetch_related(Prefetch(
         'batches',
@@ -1150,9 +1385,14 @@ def report_stock_movement(request):
     rows = []
 
     for medicine in medicines:
-        purchased = purchases_in_range.get(medicine.id, 0)
-        dispensed = dispensed_in_range.get(medicine.id, 0)
-        opening_stock = purchases_before.get(medicine.id, 0) - dispensed_before.get(medicine.id, 0)
+        purchased = purchases_in_range.get(medicine.id, 0) + internal_received_in_range.get(medicine.id, 0)
+        dispensed = dispensed_in_range.get(medicine.id, 0) + internal_dispensed_in_range.get(medicine.id, 0)
+        opening_stock = (
+            purchases_before.get(medicine.id, 0)
+            + internal_received_before.get(medicine.id, 0)
+            - dispensed_before.get(medicine.id, 0)
+            - internal_dispensed_before.get(medicine.id, 0)
+        )
         closing_stock = opening_stock + purchased - dispensed
 
         if purchased == 0 and dispensed == 0:
@@ -1419,3 +1659,55 @@ def user_reset_password(request, pk):
         'title': f'إعادة تعيين كلمة المرور: {user.username}',
         'user_object': user,
     })
+
+
+@login_required_custom
+def internal_dispensing_edit(request, pk):
+    dispensing = get_object_or_404(InternalDispensing, pk=pk)
+    if request.method == 'POST':
+        form = InternalDispensingForm(request.POST, instance=dispensing)
+        parsed, item_errors = _parse_internal_dispensing_items(request)
+        if form.is_valid() and not item_errors and not parsed:
+            item_errors.append('يجب إضافة صنف واحد على الأقل')
+        if form.is_valid() and not item_errors:
+            try:
+                with transaction.atomic():
+                    locked = InternalDispensing.objects.select_for_update().get(pk=pk)
+                    _restore_internal_dispensing_stock(locked)
+                    updated = form.save(commit=False)
+                    updated.updated_by = request.user
+                    updated.save()
+                    _apply_internal_dispensing_items(request, updated, parsed)
+                messages.success(request, f'تم تحديث المنصرف {dispensing.dispensing_ref} بنجاح')
+                return redirect('internal_dispensing_list')
+            except ValidationError as exc:
+                for message in exc.messages:
+                    messages.error(request, message)
+        else:
+            for message in item_errors:
+                messages.error(request, message)
+    else:
+        form = InternalDispensingForm(instance=dispensing)
+    return render(request, 'internal_dispensing/form.html', {
+        'form': form,
+        'title': f'تعديل المنصرف: {dispensing.dispensing_ref}',
+        'dispensing': dispensing,
+        'existing_items': dispensing.items.select_related(
+            'medicine', 'batch', 'destination_medicine', 'destination_batch'
+        ).all(),
+        'medicines': Medicine.objects.all(),
+        'medicines_json': _get_medicines_json(),
+    })
+
+
+@admin_required
+def internal_dispensing_delete(request, pk):
+    dispensing = get_object_or_404(InternalDispensing, pk=pk)
+    if request.method == 'POST':
+        with transaction.atomic():
+            locked = InternalDispensing.objects.select_for_update().get(pk=pk)
+            _restore_internal_dispensing_stock(locked)
+            locked.delete()
+        messages.success(request, f'تم حذف المنصرف {dispensing.dispensing_ref} بنجاح')
+        return redirect('internal_dispensing_list')
+    return render(request, 'internal_dispensing/delete.html', {'dispensing': dispensing})

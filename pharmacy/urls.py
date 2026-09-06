@@ -33,6 +33,12 @@ urlpatterns = [
     path('prescriptions/<int:pk>/edit/', views.prescription_edit, name='prescription_edit'),
     path('prescriptions/<int:pk>/delete/', views.prescription_delete, name='prescription_delete'),
 
+    # Internal dispensing
+    path('internal-dispensing/', views.internal_dispensing_list, name='internal_dispensing_list'),
+    path('internal-dispensing/add/', views.internal_dispensing_add, name='internal_dispensing_add'),
+    path('internal-dispensing/<int:pk>/edit/', views.internal_dispensing_edit, name='internal_dispensing_edit'),
+    path('internal-dispensing/<int:pk>/delete/', views.internal_dispensing_delete, name='internal_dispensing_delete'),
+
     # Orders
     path('orders/', views.order_list, name='order_list'),
     path('orders/add/', views.order_add, name='order_add'),
