@@ -1273,6 +1273,81 @@ def _create_batch_and_update_stock(item, order):
 
 # ─── REPORTS ─────────────────────────────────────────────────
 
+
+
+@login_required_custom
+def report_44(request):
+    # Implementation for report 44
+    today = timezone.now().date()
+    start_date = request.GET.get('from', '')
+    end_date = request.GET.get('to', '') or today
+    category_filter = request.GET.get('category', '')
+
+    medicines = Medicine.objects.all().order_by('category', 'id')
+    if category_filter:
+        medicines = medicines.filter(category__icontains=category_filter)
+
+    categories = Medicine.objects.values_list('category', flat=True).distinct().order_by('category')
+    medicine_ids = list(medicines.values_list('id', flat=True))
+
+    def _dispensing_totals(start=None, end=None, end_exclusive=False):
+        queryset = DispensingItem.objects.filter(medicine_id__in=medicine_ids)
+        if start is not None:
+            queryset = queryset.filter(prescription__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'prescription__dispensing_date__lt' if end_exclusive else 'prescription__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('quantity_dispensed')
+            )
+        }
+
+    def _internal_dispensed_totals(start=None, end=None, end_exclusive=False):
+        queryset = InternalDispensingItem.objects.filter(medicine_id__in=medicine_ids)
+        if start is not None:
+            queryset = queryset.filter(dispensing__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'dispensing__dispensing_date__lt' if end_exclusive else 'dispensing__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('quantity_dispensed')
+            )
+        }
+
+    if start_date:
+        dispensed_in_range = _dispensing_totals(start=start_date, end=end_date)
+        internal_dispensed_in_range = _internal_dispensed_totals(start=start_date, end=end_date)
+    else:
+        dispensed_in_range = _dispensing_totals(end=end_date)
+        internal_dispensed_in_range = _internal_dispensed_totals(end=end_date)
+
+    rows = []
+
+    for medicine in medicines:
+        dispensed = dispensed_in_range.get(medicine.id, 0) + internal_dispensed_in_range.get(medicine.id, 0)
+        medicine.dispensed = dispensed
+
+        if dispensed == 0:
+            continue
+
+        rows.append({
+            'medicine': medicine,
+            'dispensed': dispensed,
+        })
+
+    context = {
+        'rows': rows,
+        'categories': categories,
+        'category_filter': category_filter,
+        'start_date': start_date,
+        'end_date': end_date,
+    }
+    return render(request, 'reports/44.html', context)
+
 @login_required_custom
 def report_stock_movement(request):
     today = timezone.now().date()

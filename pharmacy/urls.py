@@ -46,6 +46,7 @@ urlpatterns = [
     path('orders/<int:pk>/delete/', views.order_delete, name='order_delete'),
 
     # Reports
+    path('reports/44/', views.report_44, name='report_44'),
     path('reports/stock-movement/', views.report_stock_movement, name='report_stock_movement'),
     path('reports/current-stock/', views.report_current_stock, name='report_current_stock'),
     path('reports/expiry/', views.report_expiry, name='report_expiry'),

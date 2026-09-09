@@ -350,8 +350,8 @@ class InternalDispensingForm(forms.ModelForm):
         }
         labels = {
             'dispensing_date': 'تاريخ الصرف',
-            'destination_name': 'الجهة',
-            'destination_reference': 'الرقم المرجعي',
+            'destination_name': 'الجهة (العهدة) / اسم المريض (غير القادرين)',
+            'destination_reference': 'رقم الاذن / الرقم القومي (غير القادرين)',
             'notes': 'ملاحظات',
         }
 
