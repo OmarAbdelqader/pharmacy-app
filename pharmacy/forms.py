@@ -1,7 +1,10 @@
 from django import forms
 from django.contrib.auth.models import User
 from django.forms.widgets import DateInput as _DateInput
-from .models import Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem, Prescription, DispensingItem, UserProfile
+from .models import (
+    Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem,
+    Prescription, DispensingItem, InternalDispensing, UserProfile,
+)
 
 
 class _MonthDateInput(_DateInput):
@@ -327,6 +330,29 @@ class DispensingItemForm(forms.ModelForm):
             'medicine': 'الصنف',
             'batch': 'التشغيلة',
             'quantity_dispensed': 'الكمية المصروفة',
+        }
+
+
+class InternalDispensingForm(forms.ModelForm):
+    class Meta:
+        model = InternalDispensing
+        fields = [
+            'dispensing_date', 'destination_name', 'destination_reference', 'notes',
+        ]
+        widgets = {
+            'dispensing_date': forms.DateInput(attrs={
+                'class': 'form-control',
+                'type': 'date',
+            }),
+            'destination_name': forms.TextInput(attrs={'class': 'form-control'}),
+            'destination_reference': forms.TextInput(attrs={'class': 'form-control'}),
+            'notes': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        }
+        labels = {
+            'dispensing_date': 'تاريخ الصرف',
+            'destination_name': 'الجهة (العهدة) / اسم المريض (غير القادرين)',
+            'destination_reference': 'رقم الاذن / الرقم القومي (غير القادرين)',
+            'notes': 'ملاحظات',
         }
 
 

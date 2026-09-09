@@ -7,7 +7,10 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .forms import OrderHeaderForm, OrderItemForm
-from .models import Batch, Medicine, MedicineCode, OrderHeader, OrderItem, Supplier
+from .models import (
+    Batch, Medicine, MedicineCode, OrderHeader, OrderItem, Supplier,
+    InternalDispensing, InternalDispensingItem,
+)
 from .views import _get_medicines_json, _save_order_items
 
 
@@ -188,3 +191,117 @@ class StockMovementReportTests(TestCase):
         self.assertEqual(row['purchased'], 7)
         self.assertEqual(row['opening_stock'], 3)
         self.assertEqual(row['closing_stock'], 10)
+
+
+class InternalDispensingTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='internal-user', password='testpass')
+        self.source = Medicine.objects.create(name='Source medicine', current_stock=0)
+        self.destination = Medicine.objects.create(name='Receiving medicine', current_stock=0)
+        self.batch = Batch.objects.create(
+            medicine=self.source,
+            batch_number='TRANSFER-01',
+            expiry_date=date(2030, 6, 30),
+            quantity_received=12,
+            quantity_remaining=12,
+        )
+        self.client.force_login(self.user)
+
+    def transfer_data(self, quantity=5, destination_type='internal'):
+        return {
+            'dispensing_date': '2026-09-06',
+            'destination_type': destination_type,
+            'destination_name': 'Ward A',
+            'destination_medicine': self.destination.pk if destination_type == 'internal' else '',
+            'notes': '',
+            'item_medicine[]': str(self.source.pk),
+            'item_batch[]': str(self.batch.pk),
+            'item_destination_medicine[]': str(self.destination.pk) if destination_type == 'internal' else '',
+            'item_quantity[]': str(quantity),
+        }
+
+    def test_internal_transfer_moves_stock_with_batch_metadata(self):
+        response = self.client.post('/internal-dispensing/add/', self.transfer_data())
+
+        self.assertRedirects(response, '/internal-dispensing/')
+        self.batch.refresh_from_db()
+        self.source.refresh_from_db()
+        self.destination.refresh_from_db()
+        received_batch = Batch.objects.get(medicine=self.destination)
+        self.assertEqual(self.batch.quantity_remaining, 7)
+        self.assertEqual(self.source.current_stock, 7)
+        self.assertEqual(received_batch.batch_number, self.batch.batch_number)
+        self.assertEqual(received_batch.expiry_date, self.batch.expiry_date)
+        self.assertEqual(received_batch.quantity_remaining, 5)
+        self.assertEqual(self.destination.current_stock, 5)
+        self.assertEqual(InternalDispensingItem.objects.count(), 1)
+
+    def test_external_transfer_only_consumes_source_stock(self):
+        response = self.client.post(
+            '/internal-dispensing/add/',
+            self.transfer_data(destination_type='external'),
+        )
+
+        self.assertRedirects(response, '/internal-dispensing/')
+        self.batch.refresh_from_db()
+        self.source.refresh_from_db()
+        self.destination.refresh_from_db()
+        self.assertEqual(self.batch.quantity_remaining, 7)
+        self.assertEqual(self.source.current_stock, 7)
+        self.assertEqual(self.destination.current_stock, 0)
+        self.assertFalse(Batch.objects.filter(medicine=self.destination).exists())
+
+    def test_excess_quantity_does_not_create_transfer_or_change_stock(self):
+        response = self.client.post('/internal-dispensing/add/', self.transfer_data(quantity=13))
+
+        self.assertEqual(response.status_code, 200)
+        self.batch.refresh_from_db()
+        self.source.refresh_from_db()
+        self.assertEqual(self.batch.quantity_remaining, 12)
+        self.assertEqual(self.source.current_stock, 12)
+        self.assertEqual(InternalDispensing.objects.count(), 0)
+        self.assertEqual(InternalDispensingItem.objects.count(), 0)
+
+    def test_edit_replaces_lines_and_restores_both_sides(self):
+        self.client.post('/internal-dispensing/add/', self.transfer_data(quantity=5))
+        dispensing = InternalDispensing.objects.get()
+        response = self.client.post(
+            f'/internal-dispensing/{dispensing.pk}/edit/',
+            self.transfer_data(quantity=3, destination_type='external'),
+        )
+
+        self.assertRedirects(response, '/internal-dispensing/')
+        self.batch.refresh_from_db()
+        self.source.refresh_from_db()
+        self.destination.refresh_from_db()
+        self.assertEqual(self.batch.quantity_remaining, 9)
+        self.assertEqual(self.source.current_stock, 9)
+        self.assertEqual(self.destination.current_stock, 0)
+        self.assertIsNone(dispensing.items.get().destination_medicine_id)
+
+    def test_internal_transfer_is_visible_in_stock_movement_report(self):
+        self.client.post('/internal-dispensing/add/', self.transfer_data(quantity=5))
+
+        response = self.client.get('/reports/stock-movement/', {
+            'from': '2026-09-01',
+            'to': '2026-09-06',
+        })
+
+        rows = {row['medicine'].pk: row for row in response.context['rows']}
+        self.assertEqual(rows[self.source.pk]['dispensed'], 5)
+        self.assertEqual(rows[self.destination.pk]['purchased'], 5)
+
+    def test_external_transfer_is_visible_as_dispensed(self):
+        self.client.post(
+            '/internal-dispensing/add/',
+            self.transfer_data(quantity=5, destination_type='external'),
+        )
+
+        response = self.client.get('/reports/stock-movement/', {
+            'from': '2026-09-01',
+            'to': '2026-09-06',
+        })
+
+        rows = {row['medicine'].pk: row for row in response.context['rows']}
+        self.assertEqual(rows[self.source.pk]['dispensed'], 5)
+        self.assertNotIn(self.destination.pk, rows)

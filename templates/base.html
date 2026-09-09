@@ -128,6 +128,9 @@
                         <li><a class="dropdown-item" href="{% url 'order_list' %}">
                             <i class="bi bi-cart me-2"></i>طلبات الشراء
                         </a></li>
+                        <li><a class="dropdown-item" href="{% url 'internal_dispensing_list' %}">
+                            <i class="bi bi-box-arrow-up me-2"></i>منصرف داخلي
+                        </a></li>
                     </ul>
                 </li>
 
@@ -137,6 +140,9 @@
                         <i class="bi bi-bar-chart"></i> التقارير
                     </a>
                     <ul class="dropdown-menu">
+                        <li><a class="dropdown-item" href="{% url 'report_44' %}">
+                            <i class="bi bi-file-earmark-text me-2"></i>دفتر 44
+                        </a></li>
                         <li><a class="dropdown-item" href="{% url 'report_stock_movement' %}">
                             <i class="bi bi-graph-up me-2"></i>حركة الأصناف
                         </a></li>

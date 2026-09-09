@@ -326,6 +326,103 @@ class DispensingItem(TimeStampedModel):
                             f'تتجاوز الكمية المتوفرة في التشغيلة ({available})'
                         )
                     })
+
+
+class InternalDispensing(TimeStampedModel):
+    DESTINATION_CHOICES = [
+        ('internal', 'جهة داخلية'),
+        ('external', 'جهة خارجية'),
+    ]
+
+    dispensing_ref = models.CharField(max_length=20, unique=True, blank=True)
+    dispensing_date = models.DateField()
+    destination_type = models.CharField(
+        max_length=20,
+        choices=DESTINATION_CHOICES,
+        default='internal',
+    )
+    destination_name = models.CharField(max_length=255)
+    destination_reference = models.CharField(max_length=100, blank=True)
+    destination_medicine = models.ForeignKey(
+        Medicine,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='internal_receipts',
+    )
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-dispensing_date', '-id']
+        indexes = [
+            models.Index(fields=['dispensing_date', 'dispensing_ref']),
+        ]
+        verbose_name = 'منصرف داخلي'
+        verbose_name_plural = 'المنصرف الداخلي'
+
+    def __str__(self):
+        return f'{self.dispensing_ref} - {self.destination_name}'
+
+    def clean(self):
+        if not self.destination_name.strip():
+            raise ValidationError({'destination_name': 'اسم الجهة مطلوب'})
+
+    def save(self, *args, **kwargs):
+        if not self.dispensing_ref:
+            last = InternalDispensing.objects.order_by('-id').first()
+            next_num = (last.id + 1) if last else 1
+            self.dispensing_ref = f'ID-{next_num:04d}'
+        super().save(*args, **kwargs)
+
+
+class InternalDispensingItem(TimeStampedModel):
+    dispensing = models.ForeignKey(
+        InternalDispensing,
+        on_delete=models.CASCADE,
+        related_name='items',
+    )
+    medicine = models.ForeignKey(
+        Medicine,
+        on_delete=models.PROTECT,
+        related_name='internal_dispensing_items',
+    )
+    batch = models.ForeignKey(
+        Batch,
+        on_delete=models.PROTECT,
+        related_name='internal_dispensing_items',
+    )
+    destination_medicine = models.ForeignKey(
+        Medicine,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='internal_receipt_items',
+    )
+    destination_batch = models.ForeignKey(
+        Batch,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='internal_destination_items',
+    )
+    quantity_dispensed = models.IntegerField()
+
+    class Meta:
+        verbose_name = 'صنف في المنصرف الداخلي'
+        verbose_name_plural = 'أصناف المنصرف الداخلي'
+
+    def __str__(self):
+        return f'{self.dispensing.dispensing_ref} - {self.medicine.name}'
+
+    def clean(self):
+        if self.quantity_dispensed <= 0:
+            raise ValidationError({
+                'quantity_dispensed': 'يجب أن تكون الكمية المصروفة أكبر من الصفر'
+            })
+        if self.batch_id and self.medicine_id and self.batch.medicine_id != self.medicine_id:
+            raise ValidationError({'batch': 'التشغيلة المختارة لا تنتمي إلى الصنف المحدد'})
+        if self.destination_batch_id and self.destination_batch.medicine_id != self.destination_medicine_id:
+            raise ValidationError({'destination_batch': 'تشغيلة الوجهة لا تنتمي إلى صنف الوجهة المحدد'})
     
 class UserProfile(models.Model):
     ROLE_CHOICES = [
