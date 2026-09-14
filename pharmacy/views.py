@@ -2180,8 +2180,9 @@ def user_add(request):
                 user.set_unusable_password()
             user.save()
 
-            profile = profile_form.save(commit=False)
-            profile.user = user
+            # The User post_save signal creates the profile automatically.
+            profile = user.profile
+            profile.role = profile_form.cleaned_data['role']
             profile.save()
 
             messages.success(request, f'تم إضافة المستخدم {user.username} بنجاح')

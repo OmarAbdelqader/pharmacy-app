@@ -11,6 +11,7 @@ from .models import (
     Batch, Medicine, MedicineCode, OrderHeader, OrderItem, Supplier,
     InternalDispensing, InternalDispensingItem,
     VaccineDispensing, VaccineDispensingItem, VaccineVial, StockDisposal,
+    UserProfile,
 )
 from .views import _get_medicines_json, _save_order_items
 
@@ -149,6 +150,26 @@ class OrderItemSaveTests(TestCase):
             payload = _get_medicines_json()
 
         self.assertIn('PAR-001', payload)
+
+    def test_admin_can_create_user_with_one_profile(self):
+        admin_user = User.objects.create_user(username='admin-user', password='testpass')
+        admin_user.profile.role = 'admin'
+        admin_user.profile.save()
+        self.client.force_login(admin_user)
+
+        response = self.client.post('/users/add/', {
+            'username': 'new-pharmacist',
+            'first_name': 'New',
+            'last_name': 'Pharmacist',
+            'email': 'new@example.com',
+            'password': 'new-password',
+            'role': 'pharmacist',
+        })
+
+        self.assertRedirects(response, '/users/')
+        created_user = User.objects.get(username='new-pharmacist')
+        self.assertEqual(UserProfile.objects.filter(user=created_user).count(), 1)
+        self.assertEqual(created_user.profile.role, 'pharmacist')
 
 
 class StockMovementReportTests(TestCase):
