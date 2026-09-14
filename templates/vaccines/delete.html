@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+
+{% block title %}حذف حركة التطعيمات{% endblock %}
+
+{% block content %}
+<div class="table-container">
+    <h5>هل أنت متأكد من حذف حركة التطعيمات بتاريخ {{ movement.dispensing_date }}؟</h5>
+    <p class="text-muted">سيتم استعادة الفيات والجرعات والسرنجات المرتبطة بهذه الحركة.</p>
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">تأكيد الحذف</button>
+        <a href="{% url 'vaccine_dispensing_list' %}" class="btn btn-outline-secondary">إلغاء</a>
+    </form>
+</div>
+{% endblock %}

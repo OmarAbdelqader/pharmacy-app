@@ -1,0 +1,64 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">{{ title }}</h4>
+    <a href="{% url 'stock_disposal_list' %}" class="btn btn-outline-secondary btn-action">العودة</a>
+</div>
+<div class="table-container">
+    <form method="post">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        <div class="row g-3">
+            <div class="col-md-3"><label class="form-label">{{ form.dispensing_date.label }}</label>{{ form.dispensing_date }}</div>
+            <div class="col-md-3"><label class="form-label">{{ form.medicine.label }}</label>{{ form.medicine }}</div>
+            <div class="col-md-3"><label class="form-label">{{ form.batch.label }}</label>{{ form.batch }}</div>
+            <div class="col-md-3"><label class="form-label">{{ form.quantity.label }}</label>{{ form.quantity }}</div>
+            <div class="col-12"><label class="form-label">{{ form.notes.label }}</label>{{ form.notes }}</div>
+        </div>
+        <div class="mt-4">
+            <button type="submit" class="btn btn-primary px-4">حفظ الإعدام</button>
+            <a href="{% url 'stock_disposal_list' %}" class="btn btn-outline-secondary px-4">إلغاء</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const medicineSelect = document.getElementById('id_medicine');
+const batchSelect = document.getElementById('id_batch');
+
+function resetBatchOptions(message) {
+    batchSelect.innerHTML = '';
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = message;
+    batchSelect.appendChild(option);
+    batchSelect.disabled = true;
+}
+
+async function loadBatches() {
+    const medicineId = medicineSelect.value;
+    resetBatchOptions(medicineId ? 'جار تحميل التشغيلات...' : 'اختر الصنف أولاً');
+    if (!medicineId) return;
+
+    const response = await fetch(`/api/medicine/${medicineId}/batches/`);
+    const data = await response.json();
+    batchSelect.innerHTML = '<option value="">اختر التشغيلة</option>';
+    data.batches.forEach(batch => {
+        const option = document.createElement('option');
+        option.value = batch.id;
+        option.textContent = `${batch.batch_number || 'بدون رقم'} — ينتهي ${batch.expiry_date} (متبقي: ${batch.quantity_remaining})`;
+        batchSelect.appendChild(option);
+    });
+    batchSelect.disabled = data.batches.length === 0;
+    if (!data.batches.length) resetBatchOptions('لا توجد تشغيلات متاحة');
+}
+
+medicineSelect.addEventListener('change', loadBatches);
+resetBatchOptions('اختر الصنف أولاً');
+</script>
+{% endblock %}
