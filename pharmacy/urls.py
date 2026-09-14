@@ -33,6 +33,16 @@ urlpatterns = [
     path('prescriptions/<int:pk>/edit/', views.prescription_edit, name='prescription_edit'),
     path('prescriptions/<int:pk>/delete/', views.prescription_delete, name='prescription_delete'),
 
+    # Vaccines
+    path('vaccines/', views.vaccine_dispensing_list, name='vaccine_dispensing_list'),
+    path('vaccines/add/', views.vaccine_dispensing_add, name='vaccine_dispensing_add'),
+    path('vaccines/<int:pk>/edit/', views.vaccine_dispensing_edit, name='vaccine_dispensing_edit'),
+    path('vaccines/<int:pk>/delete/', views.vaccine_dispensing_delete, name='vaccine_dispensing_delete'),
+
+    # Manual stock disposal
+    path('stock-disposals/', views.stock_disposal_list, name='stock_disposal_list'),
+    path('stock-disposals/add/', views.stock_disposal_add, name='stock_disposal_add'),
+
     # Internal dispensing
     path('internal-dispensing/', views.internal_dispensing_list, name='internal_dispensing_list'),
     path('internal-dispensing/add/', views.internal_dispensing_add, name='internal_dispensing_add'),

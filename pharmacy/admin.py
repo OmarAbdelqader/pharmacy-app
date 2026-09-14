@@ -1,7 +1,8 @@
 from django.contrib import admin
 from .models import (
     Medicine, MedicineCode, Supplier, Batch,
-    OrderHeader, OrderItem, Prescription, DispensingItem, UserProfile
+    OrderHeader, OrderItem, Prescription, DispensingItem, UserProfile,
+    VaccineVial,
 )
 
 
@@ -55,6 +56,17 @@ class PrescriptionAdmin(admin.ModelAdmin):
 class DispensingItemAdmin(admin.ModelAdmin):
     list_display = ['prescription', 'medicine', 'batch', 'quantity_dispensed']
     search_fields = ['prescription__prescription_ref', 'medicine__name']
+
+
+@admin.register(VaccineVial)
+class VaccineVialAdmin(admin.ModelAdmin):
+    list_display = [
+        'batch', 'opened_date', 'disposal_date',
+        'doses_remaining', 'disposed',
+    ]
+    list_filter = ['disposed', 'opened_date', 'disposal_date']
+    search_fields = ['batch__medicine__name', 'batch__batch_number']
+    autocomplete_fields = ['batch']
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):

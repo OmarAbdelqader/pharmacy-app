@@ -44,6 +44,20 @@ class Supplier(TimeStampedModel):
 
 
 class Medicine(TimeStampedModel):
+    PRODUCT_TYPE_CHOICES = [
+        ('medicine', 'دواء'),
+        ('vaccine', 'تطعيم'),
+        ('syringe', 'سرنجة'),
+    ]
+    SYRINGE_SIZE_CHOICES = [
+        ('0.5', '0.5 مل'),
+        ('3.0', '3 مل'),
+    ]
+    VACCINE_TYPE_CHOICES = [
+        ('parenteral', 'حقني'),
+        ('oral', 'فموي'),
+    ]
+
     name = models.CharField(max_length=255)
     category = models.CharField(max_length=100, blank=True)
     book_reference = models.CharField(max_length=50, blank=True)
@@ -51,6 +65,17 @@ class Medicine(TimeStampedModel):
     current_stock = models.IntegerField(default=0)
     reorder_level = models.IntegerField(default=0)
     default_dispense_qty = models.IntegerField(null=True, blank=True)
+    product_type = models.CharField(max_length=20, choices=PRODUCT_TYPE_CHOICES, default='medicine')
+    syringe_size = models.CharField(max_length=10, choices=SYRINGE_SIZE_CHOICES, blank=True)
+    is_vaccine = models.BooleanField(default=False)
+    vaccine_type = models.CharField(
+        max_length=20,
+        choices=VACCINE_TYPE_CHOICES,
+        blank=True,
+    )
+    doses_per_vial = models.PositiveIntegerField(null=True, blank=True)
+    opened_vial_validity_days = models.PositiveIntegerField(null=True, blank=True)
+    requires_three_ml_syringe = models.BooleanField(default=False)
     description = models.TextField(blank=True)
 
     class Meta:
@@ -72,6 +97,23 @@ class Medicine(TimeStampedModel):
             raise ValidationError({'reorder_level': 'لا يمكن أن يكون حد إعادة الطلب قيمة سالبة'})
         if self.default_dispense_qty is not None and self.default_dispense_qty <= 0:
             raise ValidationError({'default_dispense_qty': 'يجب أن تكون الكمية الافتراضية أكبر من الصفر'})
+        if self.product_type == 'syringe' and not self.syringe_size:
+            raise ValidationError({'syringe_size': 'مقاس السرنجة مطلوب'})
+        if self.product_type != 'syringe' and self.syringe_size:
+            raise ValidationError({'syringe_size': 'مقاس السرنجة يستخدم مع منتجات السرنجات فقط'})
+        if self.product_type == 'vaccine' and not self.is_vaccine:
+            raise ValidationError({'is_vaccine': 'يجب تحديد الصنف كتطعيم'})
+        if self.is_vaccine and self.product_type != 'vaccine':
+            raise ValidationError({'product_type': 'نوع المنتج يجب أن يكون تطعيماً'})
+        if self.is_vaccine:
+            if not self.vaccine_type:
+                raise ValidationError({'vaccine_type': 'نوع التطعيم مطلوب'})
+            if not self.doses_per_vial or self.doses_per_vial <= 0:
+                raise ValidationError({'doses_per_vial': 'عدد الجرعات في الفيالة يجب أن يكون أكبر من الصفر'})
+            if self.opened_vial_validity_days is None or self.opened_vial_validity_days <= 0:
+                raise ValidationError({'opened_vial_validity_days': 'مدة صلاحية الفيالة بعد الفتح مطلوبة'})
+        elif any((self.vaccine_type, self.doses_per_vial, self.opened_vial_validity_days)):
+            raise ValidationError('بيانات التطعيم لا تستخدم إلا مع الأصناف المحددة كتطعيمات')
 
     @property
     def is_low_stock(self):
@@ -155,6 +197,49 @@ class Batch(TimeStampedModel):
         if self.expiry_date <= today + timedelta(days=30):
             return 'expiring'
         return 'valid'
+
+
+class VaccineVial(TimeStampedModel):
+    batch = models.ForeignKey(
+        Batch, on_delete=models.PROTECT,
+        related_name='vaccine_vials'
+    )
+    opened_date = models.DateField()
+    disposal_date = models.DateField()
+    doses_remaining = models.PositiveIntegerField(default=0)
+    disposed = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['opened_date', 'id']
+        indexes = [
+            models.Index(fields=['batch', 'disposed', 'doses_remaining']),
+        ]
+        verbose_name = 'فيالة تطعيم مفتوحة'
+        verbose_name_plural = 'فيالات التطعيم المفتوحة'
+
+    def __str__(self):
+        return f'{self.batch.medicine.name} - {self.batch.batch_number} - {self.opened_date}'
+
+    def clean(self):
+        if not self.batch_id:
+            raise ValidationError({'batch': 'التشغيلة مطلوبة'})
+        medicine = self.batch.medicine
+        if not medicine.is_vaccine:
+            raise ValidationError({'batch': 'التشغيلة لا تنتمي إلى تطعيم'})
+        if self.doses_remaining > medicine.doses_per_vial:
+            raise ValidationError({
+                'doses_remaining': 'الجرعات المتبقية لا يمكن أن تتجاوز سعة الفيالة'
+            })
+        if self.disposal_date < self.opened_date:
+            raise ValidationError({
+                'disposal_date': 'تاريخ الإعدام لا يمكن أن يسبق تاريخ الفتح'
+            })
+
+    @property
+    def available_doses(self):
+        if self.disposed or self.disposal_date < timezone.now().date():
+            return 0
+        return self.doses_remaining
 
 
 class OrderHeader(TimeStampedModel):
@@ -326,6 +411,89 @@ class DispensingItem(TimeStampedModel):
                             f'تتجاوز الكمية المتوفرة في التشغيلة ({available})'
                         )
                     })
+
+
+class VaccineDispensing(TimeStampedModel):
+    dispensing_date = models.DateField()
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-dispensing_date', '-id']
+        indexes = [models.Index(fields=['dispensing_date', '-id'])]
+        verbose_name = 'حركة تطعيم'
+        verbose_name_plural = 'حركات التطعيمات'
+
+    def __str__(self):
+        return str(self.dispensing_date)
+
+
+class VaccineDispensingItem(TimeStampedModel):
+    ACTION_CHOICES = [
+        ('dispensed', 'منصرف'),
+        ('waste', 'هادر'),
+        ('disposal', 'إعدام'),
+    ]
+
+    dispensing = models.ForeignKey(
+        VaccineDispensing, on_delete=models.CASCADE,
+        related_name='items'
+    )
+    medicine = models.ForeignKey(
+        Medicine, on_delete=models.PROTECT,
+        related_name='vaccine_dispensing_items'
+    )
+    batch = models.ForeignKey(
+        Batch, on_delete=models.PROTECT,
+        related_name='vaccine_dispensing_items'
+    )
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    quantity_doses = models.PositiveIntegerField()
+    vials_opened = models.PositiveIntegerField(default=0)
+    syringe_half_ml_used = models.PositiveIntegerField(default=0)
+    syringe_three_ml_used = models.PositiveIntegerField(default=0)
+    vial_consumption = models.JSONField(default=dict, blank=True)
+    created_vial_ids = models.JSONField(default=list, blank=True)
+    syringe_consumption = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        verbose_name = 'صنف في حركة التطعيمات'
+        verbose_name_plural = 'أصناف حركة التطعيمات'
+
+    def __str__(self):
+        return f'{self.medicine.name} - {self.get_action_display()}'
+
+    def clean(self):
+        if not self.medicine_id or not self.medicine.is_vaccine:
+            raise ValidationError({'medicine': 'الصنف المحدد ليس تطعيماً'})
+        if self.batch_id and self.batch.medicine_id != self.medicine_id:
+            raise ValidationError({'batch': 'التشغيلة المختارة لا تنتمي إلى التطعيم المحدد'})
+        if not self.quantity_doses:
+            raise ValidationError({'quantity_doses': 'عدد الجرعات يجب أن يكون أكبر من الصفر'})
+
+
+class StockDisposal(TimeStampedModel):
+    dispensing_date = models.DateField()
+    medicine = models.ForeignKey(
+        Medicine, on_delete=models.PROTECT,
+        related_name='stock_disposals'
+    )
+    batch = models.ForeignKey(
+        Batch, on_delete=models.PROTECT,
+        related_name='stock_disposals'
+    )
+    quantity = models.PositiveIntegerField()
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-dispensing_date', '-id']
+        verbose_name = 'إعدام مخزون'
+        verbose_name_plural = 'إعدامات المخزون'
+
+    def clean(self):
+        if self.batch_id and self.medicine_id and self.batch.medicine_id != self.medicine_id:
+            raise ValidationError({'batch': 'التشغيلة لا تنتمي إلى الصنف المحدد'})
+        if not self.quantity:
+            raise ValidationError({'quantity': 'الكمية يجب أن تكون أكبر من الصفر'})
 
 
 class InternalDispensing(TimeStampedModel):

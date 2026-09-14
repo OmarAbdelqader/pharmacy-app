@@ -125,6 +125,14 @@
                         <li><a class="dropdown-item" href="{% url 'prescription_list' %}">
                             <i class="bi bi-file-medical me-2"></i>التذاكر
                         </a></li>
+                        <li><a class="dropdown-item" href="{% url 'vaccine_dispensing_list' %}">
+                            <i class="bi bi-shield-plus me-2"></i>التطعيمات
+                        </a></li>
+                        {% if request.user.profile.is_admin %}
+                        <li><a class="dropdown-item" href="{% url 'stock_disposal_list' %}">
+                            <i class="bi bi-trash me-2"></i>إعدام مخزون
+                        </a></li>
+                        {% endif %}
                         <li><a class="dropdown-item" href="{% url 'order_list' %}">
                             <i class="bi bi-cart me-2"></i>طلبات الشراء
                         </a></li>

@@ -115,7 +115,7 @@
 </div>
 
 <!-- Alerts row -->
-{% if low_stock_count > 0 or expiring_soon_count > 0 %}
+{% if low_stock_count > 0 or expiring_soon_count > 0 or vaccine_disposal_alert_count > 0 %}
 <div class="row g-3 mt-2">
     {% if low_stock_count > 0 %}
     <div class="col-md-6">
@@ -137,6 +137,21 @@
                 <strong>تنبيه انتهاء الصلاحية</strong><br>
                 يوجد {{ expiring_soon_count }} تشغيلة تنتهي خلال 6 أشهر
                 <a href="{% url 'report_expiry' %}" class="alert-link me-2">عرض التفاصيل</a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    {% if vaccine_disposal_alert_count > 0 %}
+    <div class="col-md-6">
+        <div class="alert alert-danger alert-badge d-flex align-items-center">
+            <i class="bi bi-hourglass-split fs-4 me-3"></i>
+            <div>
+                <strong>تنبيه إعدام التطعيمات</strong><br>
+                توجد {{ vaccine_disposal_alert_count }} فيالة مفتوحة قريبة من تاريخ الإعدام
+                {% for vial in vaccine_disposal_alerts|slice:":5" %}
+                <div class="small">{{ vial.batch.medicine.name }}: {{ vial.doses_remaining }} جرعة، {{ vial.disposal_date }}</div>
+                {% endfor %}
+                <a href="{% url 'vaccine_dispensing_list' %}" class="alert-link me-2">اتخاذ إجراء</a>
             </div>
         </div>
     </div>

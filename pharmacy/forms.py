@@ -4,6 +4,7 @@ from django.forms.widgets import DateInput as _DateInput
 from .models import (
     Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem,
     Prescription, DispensingItem, InternalDispensing, UserProfile,
+    VaccineDispensing, StockDisposal,
 )
 
 
@@ -27,8 +28,10 @@ class MedicineForm(forms.ModelForm):
     class Meta:
         model = Medicine
         fields = [
-            'name', 'category', 'book_reference',
-            'unit', 'reorder_level', 'default_dispense_qty', 'description'
+            'name', 'category', 'book_reference', 'unit', 'reorder_level',
+            'default_dispense_qty', 'product_type', 'syringe_size',
+            'vaccine_type', 'doses_per_vial', 'opened_vial_validity_days',
+            'requires_three_ml_syringe', 'description'
         ]
         # Note: current_stock is excluded — updated automatically
         widgets = {
@@ -56,6 +59,18 @@ class MedicineForm(forms.ModelForm):
                 'class': 'form-control',
                 'placeholder': '0'
             }),
+            'product_type': forms.Select(attrs={'class': 'form-select'}),
+            'syringe_size': forms.Select(attrs={'class': 'form-select'}),
+            'vaccine_type': forms.Select(attrs={'class': 'form-select'}),
+            'doses_per_vial': forms.NumberInput(attrs={
+                'class': 'form-control', 'min': '1'
+            }),
+            'opened_vial_validity_days': forms.NumberInput(attrs={
+                'class': 'form-control', 'min': '1'
+            }),
+            'requires_three_ml_syringe': forms.CheckboxInput(attrs={
+                'class': 'form-check-input'
+            }),
             'description': forms.Textarea(attrs={
                 'class': 'form-control',
                 'rows': 3,
@@ -69,8 +84,34 @@ class MedicineForm(forms.ModelForm):
             'unit': 'الوحدة',
             'reorder_level': 'حد إعادة الطلب',
             'default_dispense_qty': 'الكمية الافتراضية للصرف',
+            'product_type': 'نوع المنتج',
+            'syringe_size': 'مقاس السرنجة',
+            'vaccine_type': 'نوع التطعيم',
+            'doses_per_vial': 'عدد الجرعات في الفيالة',
+            'opened_vial_validity_days': 'مدة صلاحية الفيالة بعد الفتح بالأيام',
+            'requires_three_ml_syringe': 'يحتاج سرنجة 3 مل عند فتح الفيالة',
             'description': 'الوصف',
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk and self.instance.is_vaccine and self.instance.product_type != 'vaccine':
+            self.initial['product_type'] = 'vaccine'
+
+    def clean(self):
+        cleaned_data = super().clean()
+        product_type = cleaned_data.get('product_type')
+        self.instance.is_vaccine = product_type == 'vaccine'
+
+        if product_type != 'syringe':
+            cleaned_data['syringe_size'] = ''
+        if product_type != 'vaccine':
+            for field_name in (
+                'vaccine_type', 'doses_per_vial',
+                'opened_vial_validity_days', 'requires_three_ml_syringe',
+            ):
+                cleaned_data[field_name] = self.instance._meta.get_field(field_name).get_default()
+        return cleaned_data
 
 class SupplierForm(forms.ModelForm):
     class Meta:
@@ -331,6 +372,48 @@ class DispensingItemForm(forms.ModelForm):
             'batch': 'التشغيلة',
             'quantity_dispensed': 'الكمية المصروفة',
         }
+
+
+class VaccineDispensingForm(forms.Form):
+    dispensing_date = forms.DateField(
+        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+        label='تاريخ الحركة'
+    )
+    notes = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        label='ملاحظات'
+    )
+
+
+class StockDisposalForm(forms.ModelForm):
+    class Meta:
+        model = StockDisposal
+        fields = ['dispensing_date', 'medicine', 'batch', 'quantity', 'notes']
+        widgets = {
+            'dispensing_date': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+            'medicine': forms.Select(attrs={'class': 'form-select'}),
+            'batch': forms.Select(attrs={'class': 'form-select'}),
+            'quantity': forms.NumberInput(attrs={'class': 'form-control', 'min': '1'}),
+            'notes': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        }
+        labels = {
+            'dispensing_date': 'تاريخ الإعدام',
+            'medicine': 'الصنف',
+            'batch': 'التشغيلة والصلاحية',
+            'quantity': 'الكمية المعدمة',
+            'notes': 'ملاحظات',
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['batch'].queryset = Batch.objects.none()
+        medicine_id = self.data.get('medicine') or self.initial.get('medicine')
+        if medicine_id:
+            self.fields['batch'].queryset = Batch.objects.filter(
+                medicine_id=medicine_id,
+                quantity_remaining__gt=0,
+            ).order_by('expiry_date', 'id')
 
 
 class InternalDispensingForm(forms.ModelForm):

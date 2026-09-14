@@ -38,6 +38,30 @@
                 <label class="form-label">{{ form.default_dispense_qty.label }}</label>
                 {{ form.default_dispense_qty }}
             </div>
+            <div class="col-md-4">
+                <label class="form-label">{{ form.product_type.label }}</label>
+                {{ form.product_type }}
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">{{ form.syringe_size.label }}</label>
+                {{ form.syringe_size }}
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">{{ form.vaccine_type.label }}</label>
+                {{ form.vaccine_type }}
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">{{ form.doses_per_vial.label }}</label>
+                {{ form.doses_per_vial }}
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">{{ form.opened_vial_validity_days.label }}</label>
+                {{ form.opened_vial_validity_days }}
+            </div>
+            <div class="col-md-4 form-check ms-2">
+                {{ form.requires_three_ml_syringe }}
+                <label class="form-check-label">{{ form.requires_three_ml_syringe.label }}</label>
+            </div>
             <div class="col-md-6">
                 <label class="form-label">{{ form.reorder_level.label }}</label>
                 {{ form.reorder_level }}
@@ -69,4 +93,33 @@
     </form>
 </div>
 
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const productType = document.getElementById('id_product_type');
+const vaccineFields = [
+    document.getElementById('id_vaccine_type'),
+    document.getElementById('id_doses_per_vial'),
+    document.getElementById('id_opened_vial_validity_days'),
+    document.getElementById('id_requires_three_ml_syringe'),
+].filter(Boolean);
+const syringeField = document.getElementById('id_syringe_size');
+
+function toggleProductFields() {
+    const isVaccine = productType.value === 'vaccine';
+    const isSyringe = productType.value === 'syringe';
+    vaccineFields.forEach(field => {
+        const wrapper = field.closest('.col-md-3, .col-md-4, .form-check');
+        if (wrapper) wrapper.hidden = !isVaccine;
+        field.disabled = !isVaccine;
+    });
+    const syringeWrapper = syringeField?.closest('.col-md-4');
+    if (syringeWrapper) syringeWrapper.hidden = !isSyringe;
+    if (syringeField) syringeField.disabled = !isSyringe;
+}
+
+productType.addEventListener('change', toggleProductFields);
+toggleProductFields();
+</script>
 {% endblock %}

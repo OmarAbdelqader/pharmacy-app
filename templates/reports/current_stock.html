@@ -11,6 +11,20 @@
 </div>
 
 <div class="table-container">
+    <div class="mb-3">
+        <form method="get" class="row g-2 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label text-muted small">نوع الصنف</label>
+                <select name="category" class="form-select">
+                    <option value="">الكل</option>
+                    {% for category in categories %}
+                    <option value="{{ category }}" {% if category == category_filter %}selected{% endif %}>{{ category|default:'—' }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2"><button type="submit" class="btn btn-outline-primary w-100">تطبيق</button></div>
+        </form>
+    </div>
     {% if batches %}
     <div class="table-responsive">
         <table class="table table-hover align-middle">
@@ -21,17 +35,29 @@
                     <th>رقم التشغيلة</th>
                     <th>تاريخ الانتهاء</th>
                     <th>الكمية المتبقية</th>
+                    <th>الجرعات المتبقية بعد الفتح</th>
+                    <th>الجرد الفعلي</th>
+                    <th>الفرق</th>
                     <th>الحالة</th>
                 </tr>
             </thead>
             <tbody>
                 {% for batch in batches %}
-                <tr>
+                <tr class="stock-row" data-system-stock="{{ batch.quantity_remaining }}">
                     <td>{{ batch.medicine.category|default:'—' }}</td>
                     <td><strong>{{ batch.medicine.name }}</strong></td>
                     <td>{{ batch.batch_number|default:'—' }}</td>
                     <td>{{ batch.expiry_date }}</td>
                     <td>{{ batch.quantity_remaining }}</td>
+                    <td>
+                        {% if batch.medicine.is_vaccine %}
+                        {{ batch.opened_doses|default:0 }}
+                        {% else %}
+                        —
+                        {% endif %}
+                    </td>
+                    <td><input type="number" min="0" class="form-control form-control-sm physical-stock" placeholder="—"></td>
+                    <td class="stock-difference text-muted">—</td>
                     <td>
                         {% if batch.expiry_status == 'expired' %}
                         <span class="badge bg-danger">منتهي الصلاحية</span>
@@ -53,4 +79,23 @@
     </div>
     {% endif %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll('.stock-row').forEach(row => {
+    const input = row.querySelector('.physical-stock');
+    const difference = row.querySelector('.stock-difference');
+    input.addEventListener('input', () => {
+        if (input.value === '') {
+            difference.textContent = '—';
+            difference.className = 'stock-difference text-muted';
+            return;
+        }
+        const delta = Number(input.value) - Number(row.dataset.systemStock);
+        difference.textContent = delta === 0 ? 'مطابق' : delta > 0 ? `فائض: ${delta}` : `عجز: ${Math.abs(delta)}`;
+        difference.className = `stock-difference ${delta === 0 ? 'text-success' : delta > 0 ? 'text-warning' : 'text-danger'} fw-bold`;
+    });
+});
+</script>
 {% endblock %}
