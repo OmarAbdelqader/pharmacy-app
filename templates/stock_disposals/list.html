@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+
+{% block title %}إعدام المخزون{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">إعدام المخزون</h4>
+    <a href="{% url 'stock_disposal_add' %}" class="btn btn-primary btn-action">إعدام جديد</a>
+</div>
+<div class="table-container">
+    {% if disposals %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead class="table-light">
+                <tr><th>التاريخ</th><th>الصنف</th><th>التشغيلة</th><th>الصلاحية</th><th>الكمية</th><th>المستخدم</th></tr>
+            </thead>
+            <tbody>
+                {% for disposal in disposals %}
+                <tr>
+                    <td>{{ disposal.dispensing_date }}</td>
+                    <td>{{ disposal.medicine.name }}</td>
+                    <td>{{ disposal.batch.batch_number|default:'—' }}</td>
+                    <td>{{ disposal.batch.expiry_date|date:'m/Y' }}</td>
+                    <td>{{ disposal.quantity }}</td>
+                    <td>{{ disposal.created_by|default:'—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center py-5"><h5>لا توجد حركات إعدام</h5></div>
+    {% endif %}
+</div>
+{% endblock %}

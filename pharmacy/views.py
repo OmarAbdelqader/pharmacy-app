@@ -10,17 +10,20 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.forms import formset_factory
 from django.http import JsonResponse
-from datetime import timedelta
+from datetime import date, timedelta
+from calendar import monthrange
 from .decorators import login_required_custom, admin_required
 from .models import (
     Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem,
     Prescription, DispensingItem, InternalDispensing,
-    InternalDispensingItem, UserProfile,
+    InternalDispensingItem, UserProfile, VaccineVial, VaccineDispensing,
+    VaccineDispensingItem, StockDisposal,
 )
 from .forms import (
     MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm,
     OrderItemForm, PrescriptionForm, DispensingItemForm,
     InternalDispensingForm, UserForm, UserProfileForm, PasswordResetForm,
+    VaccineDispensingForm, StockDisposalForm,
 )
 import json
 
@@ -92,6 +95,12 @@ def dashboard(request):
         quantity_remaining__gt=0
     ).count()
 
+    vaccine_disposal_alerts = VaccineVial.objects.filter(
+        disposed=False,
+        doses_remaining__gt=0,
+        disposal_date__lte=today + timedelta(days=30),
+    ).select_related('batch__medicine').order_by('disposal_date', 'batch__medicine__name')
+
     today_prescriptions = Prescription.objects.filter(
         dispensing_date=today
     ).count()
@@ -102,6 +111,8 @@ def dashboard(request):
         'low_stock_count': low_stock_count,
         'expiring_soon_count': expiring_soon_count,
         'today_prescriptions': today_prescriptions,
+        'vaccine_disposal_alerts': vaccine_disposal_alerts,
+        'vaccine_disposal_alert_count': vaccine_disposal_alerts.count(),
     }
     return render(request, 'dashboard.html', context)
 
@@ -409,6 +420,14 @@ def medicine_batches_api(request, pk):
     batches = Batch.objects.filter(
         medicine=medicine,
         quantity_remaining__gt=0
+    ).annotate(
+        opened_doses=Sum(
+            'vaccine_vials__doses_remaining',
+            filter=Q(
+                vaccine_vials__disposed=False,
+                vaccine_vials__doses_remaining__gt=0,
+            ),
+        )
     ).order_by('expiry_date')
 
     results = []
@@ -418,6 +437,7 @@ def medicine_batches_api(request, pk):
             'batch_number': batch.batch_number,
             'expiry_date': str(batch.expiry_date),
             'quantity_remaining': batch.quantity_remaining,
+            'opened_doses': batch.opened_doses or 0,
         })
     return JsonResponse({'batches': results, 'medicine_name': medicine.name})
 
@@ -787,6 +807,411 @@ def _restore_stock(prescription):
     return items
 
 
+# ─── VACCINE DISPENSING ─────────────────────────────────────
+
+def _parse_vaccine_items(request):
+    medicine_ids = request.POST.getlist('item_medicine[]')
+    batch_ids = request.POST.getlist('item_batch[]')
+    actions = request.POST.getlist('item_action[]')
+    quantities = request.POST.getlist('item_quantity[]')
+    parsed = []
+    errors = []
+
+    for index in range(max(len(medicine_ids), len(batch_ids), len(actions), len(quantities))):
+        try:
+            medicine_id = int(medicine_ids[index])
+            batch_id = int(batch_ids[index])
+            action = actions[index]
+            quantity = int(quantities[index])
+        except (ValueError, IndexError):
+            errors.append(f'السطر {index + 1} غير مكتمل')
+            continue
+        if action not in {'dispensed', 'waste', 'disposal'}:
+            errors.append(f'السطر {index + 1}: نوع الحركة غير صحيح')
+        elif quantity <= 0:
+            errors.append(f'السطر {index + 1}: عدد الجرعات يجب أن يكون أكبر من الصفر')
+        else:
+            parsed.append((medicine_id, batch_id, action, quantity, index + 1))
+
+    if not parsed and not errors:
+        errors.append('يجب إضافة حركة واحدة على الأقل')
+    return parsed, errors
+
+
+def _consume_vaccine_doses(batch, action, quantity, movement_date, user):
+    medicine = Medicine.objects.select_for_update().get(pk=batch.medicine_id)
+    if not medicine.is_vaccine:
+        raise ValidationError('الصنف المحدد ليس تطعيماً')
+
+    open_vials = list(VaccineVial.objects.select_for_update().filter(
+        batch=batch,
+        disposed=False,
+        disposal_date__gte=movement_date,
+        doses_remaining__gt=0,
+    ).order_by('opened_date', 'id'))
+    available_open_doses = sum(vial.doses_remaining for vial in open_vials)
+    vials_opened = 0
+    vial_consumption = {}
+    created_vial_ids = []
+
+    if action == 'dispensed':
+        required_new_vials = max(
+            0,
+            (quantity - available_open_doses + medicine.doses_per_vial - 1)
+            // medicine.doses_per_vial,
+        )
+        if required_new_vials > batch.quantity_remaining:
+            raise ValidationError(
+                f'الكمية المطلوبة تتجاوز الفيات المتوفرة في التشغيلة ({batch.quantity_remaining})'
+            )
+        if required_new_vials:
+            Batch.objects.filter(pk=batch.pk).update(
+                quantity_remaining=models.F('quantity_remaining') - required_new_vials
+            )
+            Medicine.objects.filter(pk=medicine.pk).update(
+                current_stock=models.F('current_stock') - required_new_vials
+            )
+            for _ in range(required_new_vials):
+                new_vial = VaccineVial.objects.create(
+                    batch=batch,
+                    opened_date=movement_date,
+                    disposal_date=movement_date + timedelta(days=medicine.opened_vial_validity_days),
+                    doses_remaining=medicine.doses_per_vial,
+                    created_by=user,
+                    updated_by=user,
+                )
+                open_vials.append(new_vial)
+                created_vial_ids.append(new_vial.pk)
+            vials_opened = required_new_vials
+
+    if quantity > sum(vial.doses_remaining for vial in open_vials):
+        raise ValidationError('عدد الجرعات يتجاوز الجرعات المتاحة في الفيات المفتوحة')
+
+    remaining = quantity
+    for vial in open_vials:
+        consumed = min(remaining, vial.doses_remaining)
+        if not consumed:
+            continue
+        vial.doses_remaining -= consumed
+        if vial.doses_remaining == 0:
+            vial.disposed = True
+        vial.updated_by = user
+        vial.save(update_fields=['doses_remaining', 'disposed', 'updated_by', 'updated_at'])
+        vial_consumption[str(vial.pk)] = vial_consumption.get(str(vial.pk), 0) + consumed
+        remaining -= consumed
+        if not remaining:
+            break
+
+    return vials_opened, vial_consumption, created_vial_ids
+
+
+def _consume_syringe_stock(size, quantity, movement_date, user):
+    if quantity <= 0:
+        return {}
+    syringe_batches = list(Batch.objects.select_for_update().filter(
+        medicine__product_type='syringe',
+        medicine__syringe_size=size,
+        quantity_remaining__gt=0,
+        expiry_date__gte=movement_date,
+    ).select_related('medicine').order_by('expiry_date', 'id'))
+    available = sum(batch.quantity_remaining for batch in syringe_batches)
+    if available < quantity:
+        raise ValidationError(f'لا يوجد مخزون كاف من السرنجات مقاس {size} مل')
+
+    remaining = quantity
+    allocation = {}
+    for batch in syringe_batches:
+        consumed = min(remaining, batch.quantity_remaining)
+        Batch.objects.filter(pk=batch.pk).update(
+            quantity_remaining=models.F('quantity_remaining') - consumed
+        )
+        Medicine.objects.filter(pk=batch.medicine_id).update(
+            current_stock=models.F('current_stock') - consumed
+        )
+        allocation[str(batch.pk)] = allocation.get(str(batch.pk), 0) + consumed
+        remaining -= consumed
+        if not remaining:
+            break
+    return allocation
+
+
+def _restore_vaccine_movement(movement):
+    for item in movement.items.all():
+        for vial_id, quantity in item.vial_consumption.items():
+            VaccineVial.objects.filter(pk=vial_id).update(
+                doses_remaining=models.F('doses_remaining') + quantity,
+                disposed=False,
+            )
+        if item.created_vial_ids:
+            VaccineVial.objects.filter(pk__in=item.created_vial_ids).delete()
+        if item.vials_opened:
+            Batch.objects.filter(pk=item.batch_id).update(
+                quantity_remaining=models.F('quantity_remaining') + item.vials_opened
+            )
+            Medicine.objects.filter(pk=item.medicine_id).update(
+                current_stock=models.F('current_stock') + item.vials_opened
+            )
+        for batch_id, quantity in item.syringe_consumption.items():
+            Batch.objects.filter(pk=batch_id).update(
+                quantity_remaining=models.F('quantity_remaining') + quantity
+            )
+            syringe_batch = Batch.objects.filter(pk=batch_id).values_list('medicine_id', flat=True).first()
+            if syringe_batch:
+                Medicine.objects.filter(pk=syringe_batch).update(
+                    current_stock=models.F('current_stock') + quantity
+                )
+        item.delete()
+
+
+def _has_later_vaccine_dependencies(movement):
+    allocated_vial_ids = set()
+    for item in movement.items.all():
+        allocated_vial_ids.update(str(vial_id) for vial_id in item.vial_consumption)
+        allocated_vial_ids.update(str(vial_id) for vial_id in item.created_vial_ids)
+    if not allocated_vial_ids:
+        return False
+
+    later_movements = VaccineDispensing.objects.filter(
+        items__dispensing__dispensing_date__gte=movement.dispensing_date,
+    ).exclude(pk=movement.pk).distinct().prefetch_related('items')
+    for later in later_movements:
+        if (later.dispensing_date, later.pk) <= (movement.dispensing_date, movement.pk):
+            continue
+        for item in later.items.all():
+            referenced_ids = {
+                *[str(vial_id) for vial_id in item.vial_consumption],
+                *[str(vial_id) for vial_id in item.created_vial_ids],
+            }
+            if allocated_vial_ids.intersection(referenced_ids):
+                return True
+    return False
+
+
+@login_required_custom
+def vaccine_dispensing_list(request):
+    date_filter = request.GET.get('date', '')
+    records = VaccineDispensing.objects.prefetch_related(
+        Prefetch('items', queryset=VaccineDispensingItem.objects.select_related('medicine', 'batch'))
+    ).order_by('-dispensing_date', '-id')
+    if date_filter:
+        records = records.filter(dispensing_date=date_filter)
+    page_obj = paginate_queryset(request, records)
+    return render(request, 'vaccines/list.html', {
+        'records': page_obj,
+        'date_filter': date_filter,
+        'page_obj': page_obj,
+    })
+
+
+@login_required_custom
+def vaccine_dispensing_add(request):
+    today = timezone.now().date()
+    vaccines = Medicine.objects.filter(is_vaccine=True).order_by('name')
+    batches = Batch.objects.filter(
+        Q(medicine__is_vaccine=True),
+    ).filter(
+        Q(quantity_remaining__gt=0) |
+        Q(vaccine_vials__disposed=False, vaccine_vials__doses_remaining__gt=0)
+    ).annotate(
+        opened_doses=Sum(
+            'vaccine_vials__doses_remaining',
+            filter=Q(
+                vaccine_vials__disposed=False,
+                vaccine_vials__doses_remaining__gt=0,
+            ),
+        )
+    ).select_related('medicine').distinct().order_by('expiry_date')
+
+    if request.method == 'POST':
+        form = VaccineDispensingForm(request.POST)
+        parsed, errors = _parse_vaccine_items(request)
+        if form.is_valid() and not errors:
+            try:
+                with transaction.atomic():
+                    movement = VaccineDispensing.objects.create(
+                        dispensing_date=form.cleaned_data['dispensing_date'],
+                        notes=form.cleaned_data['notes'],
+                        created_by=request.user,
+                        updated_by=request.user,
+                    )
+                    for medicine_id, batch_id, action, quantity, line_no in parsed:
+                        batch = Batch.objects.select_for_update().select_related('medicine').get(pk=batch_id)
+                        if batch.medicine_id != medicine_id or not batch.medicine.is_vaccine:
+                            raise ValidationError(f'السطر {line_no}: التطعيم والتشغيلة غير متوافقين')
+                        vials_opened, vial_consumption, created_vial_ids = _consume_vaccine_doses(
+                            batch, action, quantity, movement.dispensing_date, request.user
+                        )
+                        half_ml_used = 0
+                        three_ml_used = 0
+                        syringe_consumption = {}
+                        if action == 'dispensed' and batch.medicine.vaccine_type == 'parenteral':
+                            half_ml_used = quantity
+                            three_ml_used = vials_opened if batch.medicine.requires_three_ml_syringe else 0
+                            for size, amount in (('0.5', half_ml_used), ('3.0', three_ml_used)):
+                                for batch_id, used in _consume_syringe_stock(
+                                    size, amount, movement.dispensing_date, request.user
+                                ).items():
+                                    syringe_consumption[batch_id] = syringe_consumption.get(batch_id, 0) + used
+                        VaccineDispensingItem.objects.create(
+                            dispensing=movement,
+                            medicine=batch.medicine,
+                            batch=batch,
+                            action=action,
+                            quantity_doses=quantity,
+                            vials_opened=vials_opened,
+                            syringe_half_ml_used=half_ml_used,
+                            syringe_three_ml_used=three_ml_used,
+                            vial_consumption=vial_consumption,
+                            created_vial_ids=created_vial_ids,
+                            syringe_consumption=syringe_consumption,
+                            created_by=request.user,
+                            updated_by=request.user,
+                        )
+                messages.success(request, 'تم حفظ حركة التطعيمات بنجاح')
+                return redirect('vaccine_dispensing_list')
+            except (Batch.DoesNotExist, ValidationError) as exc:
+                errors.append(str(exc))
+        for error in errors:
+            messages.error(request, error)
+    else:
+        form = VaccineDispensingForm(initial={'dispensing_date': today})
+
+    return render(request, 'vaccines/form.html', {
+        'form': form,
+        'title': 'صرف التطعيمات',
+        'vaccines': vaccines,
+        'batches': batches,
+    })
+
+
+@login_required_custom
+def vaccine_dispensing_edit(request, pk):
+    movement = get_object_or_404(VaccineDispensing, pk=pk)
+    vaccines = Medicine.objects.filter(is_vaccine=True).order_by('name')
+    batches = Batch.objects.filter(
+        Q(medicine__is_vaccine=True),
+    ).filter(
+        Q(quantity_remaining__gt=0) |
+        Q(vaccine_vials__disposed=False, vaccine_vials__doses_remaining__gt=0)
+    ).annotate(
+        opened_doses=Sum('vaccine_vials__doses_remaining', filter=Q(
+            vaccine_vials__disposed=False,
+            vaccine_vials__doses_remaining__gt=0,
+        ))
+    ).select_related('medicine').distinct().order_by('expiry_date')
+    existing_items = list(movement.items.select_related('medicine', 'batch').all())
+
+    if request.method == 'POST':
+        form = VaccineDispensingForm(request.POST)
+        parsed, errors = _parse_vaccine_items(request)
+        if _has_later_vaccine_dependencies(movement):
+            errors.append(
+                'لا يمكن تعديل هذه الحركة لأن حركة لاحقة تستخدم جرعات من نفس الفيالة. '
+                'احذف أو عدّل الحركات اللاحقة أولاً.'
+            )
+        if form.is_valid() and not errors:
+            try:
+                with transaction.atomic():
+                    _restore_vaccine_movement(movement)
+                    movement.dispensing_date = form.cleaned_data['dispensing_date']
+                    movement.notes = form.cleaned_data['notes']
+                    movement.updated_by = request.user
+                    movement.save(update_fields=['dispensing_date', 'notes', 'updated_by', 'updated_at'])
+                    for medicine_id, batch_id, action, quantity, line_no in parsed:
+                        batch = Batch.objects.select_for_update().select_related('medicine').get(pk=batch_id)
+                        if batch.medicine_id != medicine_id or not batch.medicine.is_vaccine:
+                            raise ValidationError(f'السطر {line_no}: التطعيم والتشغيلة غير متوافقين')
+                        vials_opened, vial_consumption, created_vial_ids = _consume_vaccine_doses(
+                            batch, action, quantity, movement.dispensing_date, request.user
+                        )
+                        half_ml_used = quantity if action == 'dispensed' and batch.medicine.vaccine_type == 'parenteral' else 0
+                        three_ml_used = vials_opened if half_ml_used and batch.medicine.requires_three_ml_syringe else 0
+                        syringe_consumption = {}
+                        for size, amount in (('0.5', half_ml_used), ('3.0', three_ml_used)):
+                            for syringe_batch_id, used in _consume_syringe_stock(size, amount, movement.dispensing_date, request.user).items():
+                                syringe_consumption[syringe_batch_id] = syringe_consumption.get(syringe_batch_id, 0) + used
+                        VaccineDispensingItem.objects.create(
+                            dispensing=movement, medicine=batch.medicine, batch=batch,
+                            action=action, quantity_doses=quantity, vials_opened=vials_opened,
+                            syringe_half_ml_used=half_ml_used, syringe_three_ml_used=three_ml_used,
+                            vial_consumption=vial_consumption, created_vial_ids=created_vial_ids,
+                            syringe_consumption=syringe_consumption,
+                            created_by=request.user, updated_by=request.user,
+                        )
+                messages.success(request, 'تم تحديث حركة التطعيمات بنجاح')
+                return redirect('vaccine_dispensing_list')
+            except (Batch.DoesNotExist, ValidationError) as exc:
+                errors.append(str(exc))
+        for error in errors:
+            messages.error(request, error)
+    else:
+        form = VaccineDispensingForm(initial={
+            'dispensing_date': movement.dispensing_date,
+            'notes': movement.notes,
+        })
+    return render(request, 'vaccines/form.html', {
+        'form': form, 'title': 'تعديل حركة التطعيمات',
+        'vaccines': vaccines, 'batches': batches, 'existing_items': existing_items,
+    })
+
+
+@admin_required
+def vaccine_dispensing_delete(request, pk):
+    movement = get_object_or_404(VaccineDispensing, pk=pk)
+    if request.method == 'POST':
+        if _has_later_vaccine_dependencies(movement):
+            messages.error(
+                request,
+                'لا يمكن حذف هذه الحركة لأن حركة لاحقة تستخدم جرعات من نفس الفيالة. '
+                'احذف أو عدّل الحركات اللاحقة أولاً.',
+            )
+            return redirect('vaccine_dispensing_list')
+        with transaction.atomic():
+            _restore_vaccine_movement(movement)
+            movement.delete()
+        messages.success(request, 'تم حذف حركة التطعيمات واستعادة المخزون')
+        return redirect('vaccine_dispensing_list')
+    return render(request, 'vaccines/delete.html', {'movement': movement})
+
+
+@admin_required
+def stock_disposal_list(request):
+    disposals = StockDisposal.objects.select_related('medicine', 'batch', 'created_by')
+    page_obj = paginate_queryset(request, disposals)
+    return render(request, 'stock_disposals/list.html', {'disposals': page_obj, 'page_obj': page_obj})
+
+
+@admin_required
+def stock_disposal_add(request):
+    if request.method == 'POST':
+        form = StockDisposalForm(request.POST)
+        if form.is_valid():
+            disposal = form.save(commit=False)
+            try:
+                with transaction.atomic():
+                    batch = Batch.objects.select_for_update().get(pk=disposal.batch_id)
+                    if batch.medicine_id != disposal.medicine_id:
+                        raise ValidationError('التشغيلة لا تنتمي إلى الصنف المحدد')
+                    if disposal.quantity > batch.quantity_remaining:
+                        raise ValidationError('الكمية المعدمة تتجاوز الكمية المتبقية في التشغيلة')
+                    Batch.objects.filter(pk=batch.pk).update(
+                        quantity_remaining=models.F('quantity_remaining') - disposal.quantity
+                    )
+                    Medicine.objects.filter(pk=disposal.medicine_id).update(
+                        current_stock=models.F('current_stock') - disposal.quantity
+                    )
+                    disposal.created_by = request.user
+                    disposal.updated_by = request.user
+                    disposal.save()
+                messages.success(request, 'تم تسجيل إعدام المخزون بنجاح')
+                return redirect('stock_disposal_list')
+            except (Batch.DoesNotExist, ValidationError) as exc:
+                form.add_error(None, str(exc))
+    else:
+        form = StockDisposalForm(initial={'dispensing_date': timezone.now().date()})
+    return render(request, 'stock_disposals/form.html', {'form': form, 'title': 'إعدام مخزون'})
+
+
 # ─── INTERNAL DISPENSING ────────────────────────────────────
 
 @login_required_custom
@@ -1074,7 +1499,7 @@ def order_add(request):
     return render(request, 'orders/form.html', {
         'form': form,
         'formset': formset,
-        'title': 'إنشاء طلب شراء جديد',
+        'title': 'إنشاء وارد جديد',
         'form_errors': form_errors,
         'formset_errors': formset_errors,
     })
@@ -1192,6 +1617,18 @@ def order_delete(request, pk):
     return render(request, 'orders/delete.html', {'order': order})
 
 
+@login_required_custom
+def order_print(request, pk):
+    order = get_object_or_404(
+        OrderHeader.objects.select_related('supplier', 'received_by'), pk=pk
+    )
+    return render(request, 'orders/print.html', {
+        'order': order,
+        'items': order.items.select_related('medicine').all(),
+        'blank_rows': range(max(0, 10 - order.items.count())),
+    })
+
+
 def _restore_order_stock(order, was_delivered=True):
     """Reverse batch & medicine stock updates created by an order's received items."""
     if not was_delivered:
@@ -1272,6 +1709,223 @@ def _create_batch_and_update_stock(item, order):
 
 
 # ─── REPORTS ─────────────────────────────────────────────────
+
+
+def _report_date(value, fallback):
+    try:
+        if not value:
+            return fallback
+        if len(value) == 7:
+            return date.fromisoformat(f'{value}-01')
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _report_categories():
+    return Medicine.objects.values_list('category', flat=True).distinct().order_by('category')
+
+
+def _selected_categories(request):
+    return [value for value in request.GET.getlist('category') if value]
+
+
+def _movement_totals(medicine_ids, start=None, end=None):
+    received = OrderItem.objects.filter(
+        medicine_id__in=medicine_ids, order__status='Delivered'
+    ).annotate(
+        effective=models.Case(
+            models.When(order__receive_date__isnull=False, then=models.F('order__receive_date')),
+            default=models.F('order__order_date'), output_field=models.DateField(),
+        )
+    )
+    dispensed = DispensingItem.objects.filter(medicine_id__in=medicine_ids)
+    internal = InternalDispensingItem.objects.filter(medicine_id__in=medicine_ids)
+    disposed = StockDisposal.objects.filter(medicine_id__in=medicine_ids)
+
+    def bounded(queryset, field):
+        if start is not None:
+            queryset = queryset.filter(**{f'{field}__gte': start})
+        if end is not None:
+            queryset = queryset.filter(**{f'{field}__lte': end})
+        return queryset
+
+    def totals(queryset, field, value):
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in bounded(queryset, field).values('medicine_id').annotate(total=Sum(value))
+        }
+
+    received_totals = {
+        row['medicine_id']: row['total'] or 0
+        for row in bounded(received, 'effective').values('medicine_id').annotate(total=Sum('quantity_received'))
+    }
+    dispensed_totals = totals(dispensed, 'prescription__dispensing_date', 'quantity_dispensed')
+    internal_totals = totals(internal, 'dispensing__dispensing_date', 'quantity_dispensed')
+    disposed_totals = totals(disposed, 'dispensing_date', 'quantity')
+    return received_totals, dispensed_totals, internal_totals, disposed_totals
+
+
+def _stock_at_date(medicine, target):
+    received, dispensed, internal, disposed = _movement_totals(
+        [medicine.id], start=target + timedelta(days=1)
+    )
+    return (
+        medicine.current_stock
+        - received.get(medicine.id, 0)
+        + dispensed.get(medicine.id, 0)
+        + internal.get(medicine.id, 0)
+        + disposed.get(medicine.id, 0)
+    )
+
+
+def _availability_mark(medicine, stock):
+    if stock <= 0:
+        return 'X'
+    if medicine.reorder_level and stock < medicine.reorder_level * 0.05:
+        return 'O'
+    return '✓'
+
+
+@login_required_custom
+def report_physician_drug_list(request):
+    selected = _selected_categories(request)
+    medicines = Medicine.objects.all().order_by('category', 'id')
+    if selected:
+        medicines = medicines.filter(category__in=selected)
+    groups = []
+    for category in sorted({medicine.category for medicine in medicines}):
+        groups.append({
+            'category': category,
+            'medicines': [medicine for medicine in medicines if medicine.category == category],
+        })
+    for group in groups:
+        for medicine in group['medicines']:
+            medicine.availability_mark = _availability_mark(medicine, medicine.current_stock)
+    columns = [[], [], []]
+    for index, group in enumerate(groups):
+        columns[index % 3].append(group)
+    return render(request, 'reports/physician_drug_list.html', {
+        'groups': groups,
+        'columns': columns,
+        'show_marks': request.GET.get('marks', '1') != '0',
+        'categories': _report_categories(),
+        'selected_categories': selected,
+    })
+
+
+@login_required_custom
+def report_pharmacist_drug_list(request):
+    today = timezone.now().date()
+    selected_month = _report_date(request.GET.get('month'), today.replace(day=1))
+    days_in_month = monthrange(selected_month.year, selected_month.month)[1]
+    selected = _selected_categories(request)
+    medicines = Medicine.objects.all().order_by('category', 'id')
+    if selected:
+        medicines = medicines.filter(category__in=selected)
+    first_day = selected_month.replace(day=1)
+    last_day = selected_month.replace(day=days_in_month)
+    rows = []
+    for medicine in medicines:
+        rows.append({
+            'medicine': medicine,
+            'daily_values': [
+                _availability_mark(medicine, _stock_at_date(
+                    medicine, date(selected_month.year, selected_month.month, day)
+                ))
+                for day in range(1, days_in_month + 1)
+            ],
+        })
+    return render(request, 'reports/pharmacist_drug_list.html', {
+        'rows': rows,
+        'days': range(1, days_in_month + 1),
+        'month': selected_month,
+        'categories': _report_categories(),
+        'selected_categories': selected,
+    })
+
+
+@login_required_custom
+def report_monthly_average_consumption(request):
+    today = timezone.now().date()
+    selected_month = _report_date(request.GET.get('month'), today.replace(day=1))
+    months = []
+    for offset in range(2, -1, -1):
+        month = selected_month.month - offset
+        year = selected_month.year
+        while month <= 0:
+            month += 12
+            year -= 1
+        months.append(date(year, month, 1))
+
+    rows = []
+    for medicine in Medicine.objects.exclude(is_vaccine=True).order_by('category', 'id'):
+        monthly = []
+        for month in months:
+            last_day = date(month.year, month.month, monthrange(month.year, month.month)[1])
+            after_received, after_dispensed, after_internal, after_disposed = _movement_totals(
+                [medicine.id], start=last_day + timedelta(days=1)
+            )
+            stock_at_start = medicine.current_stock - after_received.get(medicine.id, 0)
+            stock_at_start += after_dispensed.get(medicine.id, 0)
+            stock_at_start += after_internal.get(medicine.id, 0)
+            stock_at_start += after_disposed.get(medicine.id, 0)
+            month_dispensed = (
+                _movement_totals([medicine.id], start=month, end=last_day)[1].get(medicine.id, 0)
+                + _movement_totals([medicine.id], start=month, end=last_day)[2].get(medicine.id, 0)
+            )
+            month_received = _movement_totals([medicine.id], start=month, end=last_day)[0].get(medicine.id, 0)
+            month_disposed = _movement_totals([medicine.id], start=month, end=last_day)[3].get(medicine.id, 0)
+            balance = stock_at_start + month_received - month_dispensed - month_disposed
+            out_of_stock = stock_at_start <= 0 or balance <= 0
+            monthly.append({'consumption': month_dispensed, 'out_of_stock': out_of_stock})
+        valid = [item['consumption'] for item in monthly if not item['out_of_stock']]
+        average = max(item['consumption'] for item in monthly) if not valid else sum(valid) / len(valid)
+        rows.append({'medicine': medicine, 'months': monthly, 'average': average})
+    return render(request, 'reports/monthly_average_consumption.html', {
+        'rows': rows,
+        'months': months,
+        'selected_month': selected_month,
+    })
+
+
+@login_required_custom
+def report_vaccine_movement(request):
+    today = timezone.now().date()
+    start_date = _report_date(request.GET.get('from'), today.replace(day=1))
+    end_date = _report_date(request.GET.get('to'), today)
+    rows = []
+    for medicine in Medicine.objects.filter(is_vaccine=True).order_by('category', 'id'):
+        def vaccine_total(start, end, action=None):
+            queryset = VaccineDispensingItem.objects.filter(
+                medicine=medicine, dispensing__dispensing_date__range=(start, end)
+            )
+            if action:
+                queryset = queryset.filter(action=action)
+            return queryset.aggregate(total=Sum('quantity_doses'))['total'] or 0
+
+        received_qs = OrderItem.objects.filter(
+            medicine=medicine, order__status='Delivered'
+        ).annotate(effective=models.Case(
+            models.When(order__receive_date__isnull=False, then=models.F('order__receive_date')),
+            default=models.F('order__order_date'), output_field=models.DateField(),
+        ))
+        received_before = received_qs.filter(effective__lt=start_date).aggregate(total=Sum('quantity_received'))['total'] or 0
+        received = received_qs.filter(effective__range=(start_date, end_date)).aggregate(total=Sum('quantity_received'))['total'] or 0
+        doses = medicine.doses_per_vial or 1
+        opening = received_before * doses - vaccine_total(date.min, start_date - timedelta(days=1), 'dispensed') - vaccine_total(date.min, start_date - timedelta(days=1), 'waste') - vaccine_total(date.min, start_date - timedelta(days=1), 'disposal')
+        dispensed = vaccine_total(start_date, end_date, 'dispensed')
+        wasted = vaccine_total(start_date, end_date, 'waste')
+        disposed = vaccine_total(start_date, end_date, 'disposal')
+        used = dispensed + wasted + disposed
+        total = opening + received * doses
+        if total or used or medicine.current_stock:
+            rows.append({'medicine': medicine, 'opening': opening, 'received': received * doses,
+                         'total': total, 'dispensed': dispensed, 'wasted': wasted,
+                         'disposed': disposed, 'used': used, 'remaining': total - used})
+    return render(request, 'reports/vaccine_movement.html', {
+        'rows': rows, 'start_date': start_date, 'end_date': end_date,
+    })
 
 
 
@@ -1388,7 +2042,10 @@ def report_stock_movement(request):
         }
 
     def _dispensing_totals(start=None, end=None, end_exclusive=False):
-        queryset = DispensingItem.objects.filter(medicine_id__in=medicine_ids)
+        queryset = DispensingItem.objects.filter(
+            medicine_id__in=medicine_ids,
+            medicine__is_vaccine=False,
+        )
         if start is not None:
             queryset = queryset.filter(prescription__dispensing_date__gte=start)
         if end is not None:
@@ -1399,6 +2056,57 @@ def report_stock_movement(request):
             for row in queryset.values('medicine_id').annotate(
                 total=Sum('quantity_dispensed')
             )
+        }
+
+    def _vaccine_dispensed_totals(start=None, end=None, end_exclusive=False):
+        queryset = VaccineDispensingItem.objects.filter(
+            medicine_id__in=medicine_ids,
+            action='dispensed',
+        )
+        if start is not None:
+            queryset = queryset.filter(dispensing__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'dispensing__dispensing_date__lt' if end_exclusive else 'dispensing__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('vials_opened')
+            )
+        }
+
+    def _automatic_syringe_totals(start=None, end=None, end_exclusive=False):
+        queryset = VaccineDispensingItem.objects.filter(action='dispensed')
+        if start is not None:
+            queryset = queryset.filter(dispensing__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'dispensing__dispensing_date__lt' if end_exclusive else 'dispensing__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        totals = {}
+        for size, field_name in (
+            ('0.5', 'syringe_half_ml_used'),
+            ('3.0', 'syringe_three_ml_used'),
+        ):
+            amount = queryset.aggregate(total=Sum(field_name))['total'] or 0
+            syringe_ids = Medicine.objects.filter(
+                id__in=medicine_ids,
+                product_type='syringe',
+                syringe_size=size,
+            ).values_list('id', flat=True)
+            for syringe_id in syringe_ids:
+                totals[syringe_id] = amount
+        return totals
+
+    def _disposal_totals(start=None, end=None, end_exclusive=False):
+        queryset = StockDisposal.objects.filter(medicine_id__in=medicine_ids)
+        if start is not None:
+            queryset = queryset.filter(dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'dispensing_date__lt' if end_exclusive else 'dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(total=Sum('quantity'))
         }
 
     def _internal_dispensed_totals(start=None, end=None, end_exclusive=False):
@@ -1434,19 +2142,31 @@ def report_stock_movement(request):
     if start_date:
         purchases_in_range = _purchase_totals(start=start_date, end=end_date)
         dispensed_in_range = _dispensing_totals(start=start_date, end=end_date)
+        vaccine_dispensed_in_range = _vaccine_dispensed_totals(start=start_date, end=end_date)
+        automatic_syringe_in_range = _automatic_syringe_totals(start=start_date, end=end_date)
+        disposal_in_range = _disposal_totals(start=start_date, end=end_date)
         internal_dispensed_in_range = _internal_dispensed_totals(start=start_date, end=end_date)
         internal_received_in_range = _internal_received_totals(start=start_date, end=end_date)
         purchases_before = _purchase_totals(end=start_date, end_exclusive=True)
         dispensed_before = _dispensing_totals(end=start_date, end_exclusive=True)
+        vaccine_dispensed_before = _vaccine_dispensed_totals(end=start_date, end_exclusive=True)
+        automatic_syringe_before = _automatic_syringe_totals(end=start_date, end_exclusive=True)
+        disposal_before = _disposal_totals(end=start_date, end_exclusive=True)
         internal_dispensed_before = _internal_dispensed_totals(end=start_date, end_exclusive=True)
         internal_received_before = _internal_received_totals(end=start_date, end_exclusive=True)
     else:
         purchases_in_range = _purchase_totals(end=end_date)
         dispensed_in_range = _dispensing_totals(end=end_date)
+        vaccine_dispensed_in_range = _vaccine_dispensed_totals(end=end_date)
+        automatic_syringe_in_range = _automatic_syringe_totals(end=end_date)
+        disposal_in_range = _disposal_totals(end=end_date)
         internal_dispensed_in_range = _internal_dispensed_totals(end=end_date)
         internal_received_in_range = _internal_received_totals(end=end_date)
         purchases_before = {}
         dispensed_before = {}
+        vaccine_dispensed_before = {}
+        automatic_syringe_before = {}
+        disposal_before = {}
         internal_dispensed_before = {}
         internal_received_before = {}
 
@@ -1461,11 +2181,20 @@ def report_stock_movement(request):
 
     for medicine in medicines:
         purchased = purchases_in_range.get(medicine.id, 0) + internal_received_in_range.get(medicine.id, 0)
-        dispensed = dispensed_in_range.get(medicine.id, 0) + internal_dispensed_in_range.get(medicine.id, 0)
+        dispensed = (
+            dispensed_in_range.get(medicine.id, 0)
+            + vaccine_dispensed_in_range.get(medicine.id, 0)
+            + automatic_syringe_in_range.get(medicine.id, 0)
+            + disposal_in_range.get(medicine.id, 0)
+            + internal_dispensed_in_range.get(medicine.id, 0)
+        )
         opening_stock = (
             purchases_before.get(medicine.id, 0)
             + internal_received_before.get(medicine.id, 0)
             - dispensed_before.get(medicine.id, 0)
+            - vaccine_dispensed_before.get(medicine.id, 0)
+            - automatic_syringe_before.get(medicine.id, 0)
+            - disposal_before.get(medicine.id, 0)
             - internal_dispensed_before.get(medicine.id, 0)
         )
         closing_stock = opening_stock + purchased - dispensed
@@ -1497,13 +2226,30 @@ def report_stock_movement(request):
 
 @login_required_custom
 def report_current_stock(request):
-    # Get all batches with remaining quantity > 0, ordered by medicine and expiry
+    # Include vaccine batches that have doses remaining in opened vials.
+    category_filter = request.GET.get('category', '')
     batches = Batch.objects.filter(
-        quantity_remaining__gt=0
-    ).select_related('medicine').order_by('medicine__category', 'medicine__name', 'expiry_date')
+        Q(quantity_remaining__gt=0) |
+        Q(vaccine_vials__disposed=False, vaccine_vials__doses_remaining__gt=0)
+    )
+    if category_filter:
+        batches = batches.filter(medicine__category=category_filter)
+    batches = batches.annotate(
+        opened_doses=Sum(
+            'vaccine_vials__doses_remaining',
+            filter=Q(
+                vaccine_vials__disposed=False,
+                vaccine_vials__doses_remaining__gt=0,
+            ),
+        )
+    ).select_related('medicine').distinct().order_by(
+        'medicine__category', 'medicine_id', 'expiry_date'
+    )
     
     return render(request, 'reports/current_stock.html', {
         'batches': batches,
+        'categories': Medicine.objects.values_list('category', flat=True).distinct().order_by('category'),
+        'category_filter': category_filter,
     })
 
 
@@ -1515,7 +2261,7 @@ def report_expiry(request):
         expiry_date__gte=today,
         expiry_date__lte=six_months,
         quantity_remaining__gt=0
-    ).select_related('medicine').order_by('expiry_date')
+    ).select_related('medicine').order_by('medicine__category', 'medicine_id', 'expiry_date')
     return render(request, 'reports/expiry.html', {
         'batches': batches,
         'today': today,
@@ -1664,8 +2410,9 @@ def user_add(request):
                 user.set_unusable_password()
             user.save()
 
-            profile = profile_form.save(commit=False)
-            profile.user = user
+            # The User post_save signal creates the profile automatically.
+            profile = user.profile
+            profile.role = profile_form.cleaned_data['role']
             profile.save()
 
             messages.success(request, f'تم إضافة المستخدم {user.username} بنجاح')

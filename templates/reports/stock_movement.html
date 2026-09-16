@@ -44,7 +44,9 @@
             <thead class="table-light">
                 <tr>
                     <th>نوع الصنف</th>
+                    <th>صفحة دفتر 118</th>
                     <th>اسم الصنف</th>
+                    <th>الوحدة</th>
                     <th>رصيد بداية الشهر</th>
                     <th>وارد</th>
                     <th>الإجمالي</th>
@@ -58,7 +60,9 @@
                 {% for row in rows %}
                 <tr>
                     <td>{{ row.medicine.category|default:'—' }}</td>
+                    <td>{{ row.medicine.book_reference|default:'—' }}</td>
                     <td><strong>{{ row.medicine.name }}</strong></td>
+                    <td>{{ row.medicine.unit|default:'—' }}</td>
                     <td>{{ row.opening_stock }}</td>
                     <td>{{ row.purchased }}</td>
                     <td>{{ row.total }}</td>
@@ -66,7 +70,7 @@
                     <td>{{ row.closing_stock }}</td>
                     <td>
                         {% if row.nearest_expiry %}
-                        {{ row.nearest_expiry|date:"m/Y" }}
+                        {{ row.nearest_expiry|date:"Y/m/d" }}
                         {% else %}
                         —
                         {% endif %}

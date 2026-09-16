@@ -1,0 +1,69 @@
+{% extends 'base.html' %}
+
+{% block title %}التطعيمات{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+    <div>
+        <h4 class="mb-1">التطعيمات</h4>
+        <p class="text-muted mb-0">حركات الجرعات وفتح الفيات</p>
+    </div>
+    <a href="{% url 'vaccine_dispensing_add' %}" class="btn btn-primary btn-action">حركة جديدة</a>
+</div>
+
+<div class="table-container mb-3">
+    <form method="get" class="row g-3 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label text-muted small">التاريخ</label>
+            <input type="date" name="date" value="{{ date_filter }}" class="form-control">
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-outline-primary w-100">تطبيق</button>
+        </div>
+    </form>
+</div>
+
+<div class="table-container">
+    {% if records %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>التاريخ</th>
+                    <th>الحركة</th>
+                    <th>التطعيم</th>
+                    <th>التشغيلة</th>
+                    <th>الجرعات</th>
+                    <th>الفيات المفتوحة</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for record in records %}
+                {% for item in record.items.all %}
+                <tr>
+                    <td>{{ record.dispensing_date }}</td>
+                    <td>{{ item.get_action_display }}</td>
+                    <td>{{ item.medicine.name }}</td>
+                    <td>{{ item.batch.batch_number|default:'—' }}</td>
+                    <td>{{ item.quantity_doses }}</td>
+                    <td>{{ item.vials_opened }}</td>
+                    <td class="text-nowrap">
+                        <a href="{% url 'vaccine_dispensing_edit' record.pk %}" class="btn btn-sm btn-outline-primary">تعديل</a>
+                        {% if request.user.profile.is_admin %}
+                        <a href="{% url 'vaccine_dispensing_delete' record.pk %}" class="btn btn-sm btn-outline-danger">حذف</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center py-5">
+        <h5>لا توجد حركات تطعيم</h5>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

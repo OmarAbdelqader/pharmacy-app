@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block title %}قائمة الأدوية للطبيب{% endblock %}
+{% block extra_css %}
+<style>
+@page { size: A4 portrait; margin: 10mm; }
+@media print { .navbar, .page-header, .filter-panel, .no-print { display: none !important; } body { background: #fff; color: #000; } .container-fluid { padding: 0 !important; } .table-container { box-shadow: none; padding: 0; } }
+.report-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.report-grid table { width: 100%; table-layout: fixed; }
+.report-grid td:first-child { width: 78%; }
+.status-mark { display: inline-block; width: 1.8rem; text-align: center; font-size: 1.25rem; font-weight: bold; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">قائمة الأدوية للطبيب</h4>
+    <button class="btn btn-primary no-print" onclick="window.print()"><i class="bi bi-printer me-1"></i> طباعة</button>
+</div>
+<div class="table-container filter-panel mb-3">
+    <form method="get" class="row g-2 align-items-end">
+        <div class="col-md-10">
+            <label class="form-label">الفئات</label>
+            <div class="d-flex flex-wrap gap-3">
+                {% for category in categories %}
+                <label class="form-check"><input class="form-check-input" type="checkbox" name="category" value="{{ category }}" {% if category in selected_categories %}checked{% endif %}> <span class="form-check-label">{{ category|default:'غير مصنف' }}</span></label>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="col-md-2"><label class="form-check mb-2"><input class="form-check-input" type="checkbox" name="marks" value="0"> طباعة بدون علامات</label><button class="btn btn-primary w-100">تطبيق</button></div>
+    </form>
+</div>
+<div class="table-container">
+    <h5 class="text-center mb-3">قائمة الأدوية</h5>
+    <div class="report-grid">
+    {% for column in columns %}<div>
+        {% for group in column %}
+        <h6 class="border-bottom pb-1 mt-2">{{ group.category|default:'غير مصنف' }}</h6>
+        <table class="table table-sm mb-2"><tbody>
+            {% for medicine in group.medicines %}<tr><td>{{ medicine.name }}</td><td class="text-center"><span class="status-mark">{% if show_marks %}{{ medicine.availability_mark }}{% endif %}</span></td></tr>{% endfor %}
+        </tbody></table>
+        {% endfor %}
+    </div>{% endfor %}
+    </div>
+    {% if show_marks %}<p class="small text-muted mt-3">✓ متوفر &nbsp;&nbsp; X غير متوفر &nbsp;&nbsp; O مخزون منخفض</p>{% endif %}
+</div>
+{% endblock %}

@@ -125,8 +125,16 @@
                         <li><a class="dropdown-item" href="{% url 'prescription_list' %}">
                             <i class="bi bi-file-medical me-2"></i>التذاكر
                         </a></li>
+                        <li><a class="dropdown-item" href="{% url 'vaccine_dispensing_list' %}">
+                            <i class="bi bi-shield-plus me-2"></i>التطعيمات
+                        </a></li>
+                        {% if request.user.profile.is_admin %}
+                        <li><a class="dropdown-item" href="{% url 'stock_disposal_list' %}">
+                            <i class="bi bi-trash me-2"></i>إعدام مخزون
+                        </a></li>
+                        {% endif %}
                         <li><a class="dropdown-item" href="{% url 'order_list' %}">
-                            <i class="bi bi-cart me-2"></i>طلبات الشراء
+                            <i class="bi bi-cart me-2"></i>وارد
                         </a></li>
                         <li><a class="dropdown-item" href="{% url 'internal_dispensing_list' %}">
                             <i class="bi bi-box-arrow-up me-2"></i>منصرف داخلي
@@ -160,6 +168,18 @@
                         </a></li>
                         <li><a class="dropdown-item" href="{% url 'report_daily_dispensing' %}">
                             <i class="bi bi-printer me-2"></i>الصرف اليومي
+                        </a></li>
+                        <li><a class="dropdown-item" href="{% url 'report_physician_drug_list' %}">
+                            <i class="bi bi-clipboard2-pulse me-2"></i>قائمة الأدوية للطبيب
+                        </a></li>
+                        <li><a class="dropdown-item" href="{% url 'report_pharmacist_drug_list' %}">
+                            <i class="bi bi-calendar3 me-2"></i>قائمة الأدوية للصيدلي
+                        </a></li>
+                        <li><a class="dropdown-item" href="{% url 'report_monthly_average_consumption' %}">
+                            <i class="bi bi-calculator me-2"></i>متوسط الاستهلاك الشهري
+                        </a></li>
+                        <li><a class="dropdown-item" href="{% url 'report_vaccine_movement' %}">
+                            <i class="bi bi-shield-plus me-2"></i>حركة التطعيمات
                         </a></li>
                     </ul>
                 </li>
