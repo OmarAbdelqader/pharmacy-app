@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block title %}قائمة الأدوية للصيدلي{% endblock %}
+{% block extra_css %}
+<style>
+@page { size: A4 landscape; margin: 7mm; }
+.report-table { font-size: 10px; white-space: nowrap; }
+.report-table th, .report-table td { padding: 2px 4px; text-align: center; }
+.report-table th:first-child, .report-table td:first-child { text-align: right; position: sticky; right: 0; background: #fff; }
+@media print { .navbar, .page-header, .filter-panel, .no-print { display: none !important; } body { background: #fff; color:#000; } .container-fluid { padding:0 !important; } .table-container { box-shadow:none; padding:0; } .report-table th:first-child, .report-table td:first-child { position: static; } }
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center"><h4>قائمة الأدوية للصيدلي - {{ month|date:'Y/m' }}</h4><button class="btn btn-primary no-print" onclick="window.print()"><i class="bi bi-printer me-1"></i> طباعة</button></div>
+<div class="table-container filter-panel mb-3 no-print"><form method="get" class="row g-2 align-items-end"><div class="col-md-3"><label class="form-label">الشهر</label><input type="month" name="month" value="{{ month|date:'Y-m' }}" class="form-control"></div><div class="col-md-7"><label class="form-label">الفئات</label><div class="d-flex flex-wrap gap-3">{% for category in categories %}<label class="form-check"><input class="form-check-input" type="checkbox" name="category" value="{{ category }}" {% if category in selected_categories %}checked{% endif %}> {{ category|default:'غير مصنف' }}</label>{% endfor %}</div></div><div class="col-md-2"><button class="btn btn-primary w-100">تطبيق</button></div></form></div>
+<div class="table-container"><div class="table-responsive"><table class="table table-bordered report-table"><thead class="table-light"><tr><th>الفئة / الصنف</th>{% for day in days %}<th>{{ day }}</th>{% endfor %}</tr></thead><tbody>{% regroup rows by medicine.category as category_groups %}{% for category_group in category_groups %}<tr><th colspan="{{ days|length|add:1 }}" class="text-end">{{ category_group.grouper|default:'غير مصنف' }}</th></tr>{% for row in category_group.list %}<tr><td>{{ row.medicine.name }}</td>{% for amount in row.daily_values %}<td>{{ amount|default:'-' }}</td>{% endfor %}</tr>{% endfor %}{% empty %}<tr><td colspan="32" class="text-center">لا توجد أصناف.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}
