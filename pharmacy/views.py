@@ -10,7 +10,8 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.forms import formset_factory
 from django.http import JsonResponse
-from datetime import timedelta
+from datetime import date, timedelta
+from calendar import monthrange
 from .decorators import login_required_custom, admin_required
 from .models import (
     Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem,
@@ -1498,7 +1499,7 @@ def order_add(request):
     return render(request, 'orders/form.html', {
         'form': form,
         'formset': formset,
-        'title': 'إنشاء طلب شراء جديد',
+        'title': 'إنشاء وارد جديد',
         'form_errors': form_errors,
         'formset_errors': formset_errors,
     })
@@ -1616,6 +1617,18 @@ def order_delete(request, pk):
     return render(request, 'orders/delete.html', {'order': order})
 
 
+@login_required_custom
+def order_print(request, pk):
+    order = get_object_or_404(
+        OrderHeader.objects.select_related('supplier', 'received_by'), pk=pk
+    )
+    return render(request, 'orders/print.html', {
+        'order': order,
+        'items': order.items.select_related('medicine').all(),
+        'blank_rows': range(max(0, 10 - order.items.count())),
+    })
+
+
 def _restore_order_stock(order, was_delivered=True):
     """Reverse batch & medicine stock updates created by an order's received items."""
     if not was_delivered:
@@ -1696,6 +1709,223 @@ def _create_batch_and_update_stock(item, order):
 
 
 # ─── REPORTS ─────────────────────────────────────────────────
+
+
+def _report_date(value, fallback):
+    try:
+        if not value:
+            return fallback
+        if len(value) == 7:
+            return date.fromisoformat(f'{value}-01')
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _report_categories():
+    return Medicine.objects.values_list('category', flat=True).distinct().order_by('category')
+
+
+def _selected_categories(request):
+    return [value for value in request.GET.getlist('category') if value]
+
+
+def _movement_totals(medicine_ids, start=None, end=None):
+    received = OrderItem.objects.filter(
+        medicine_id__in=medicine_ids, order__status='Delivered'
+    ).annotate(
+        effective=models.Case(
+            models.When(order__receive_date__isnull=False, then=models.F('order__receive_date')),
+            default=models.F('order__order_date'), output_field=models.DateField(),
+        )
+    )
+    dispensed = DispensingItem.objects.filter(medicine_id__in=medicine_ids)
+    internal = InternalDispensingItem.objects.filter(medicine_id__in=medicine_ids)
+    disposed = StockDisposal.objects.filter(medicine_id__in=medicine_ids)
+
+    def bounded(queryset, field):
+        if start is not None:
+            queryset = queryset.filter(**{f'{field}__gte': start})
+        if end is not None:
+            queryset = queryset.filter(**{f'{field}__lte': end})
+        return queryset
+
+    def totals(queryset, field, value):
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in bounded(queryset, field).values('medicine_id').annotate(total=Sum(value))
+        }
+
+    received_totals = {
+        row['medicine_id']: row['total'] or 0
+        for row in bounded(received, 'effective').values('medicine_id').annotate(total=Sum('quantity_received'))
+    }
+    dispensed_totals = totals(dispensed, 'prescription__dispensing_date', 'quantity_dispensed')
+    internal_totals = totals(internal, 'dispensing__dispensing_date', 'quantity_dispensed')
+    disposed_totals = totals(disposed, 'dispensing_date', 'quantity')
+    return received_totals, dispensed_totals, internal_totals, disposed_totals
+
+
+def _stock_at_date(medicine, target):
+    received, dispensed, internal, disposed = _movement_totals(
+        [medicine.id], start=target + timedelta(days=1)
+    )
+    return (
+        medicine.current_stock
+        - received.get(medicine.id, 0)
+        + dispensed.get(medicine.id, 0)
+        + internal.get(medicine.id, 0)
+        + disposed.get(medicine.id, 0)
+    )
+
+
+def _availability_mark(medicine, stock):
+    if stock <= 0:
+        return 'X'
+    if medicine.reorder_level and stock < medicine.reorder_level * 0.05:
+        return 'O'
+    return '✓'
+
+
+@login_required_custom
+def report_physician_drug_list(request):
+    selected = _selected_categories(request)
+    medicines = Medicine.objects.all().order_by('category', 'id')
+    if selected:
+        medicines = medicines.filter(category__in=selected)
+    groups = []
+    for category in sorted({medicine.category for medicine in medicines}):
+        groups.append({
+            'category': category,
+            'medicines': [medicine for medicine in medicines if medicine.category == category],
+        })
+    for group in groups:
+        for medicine in group['medicines']:
+            medicine.availability_mark = _availability_mark(medicine, medicine.current_stock)
+    columns = [[], [], []]
+    for index, group in enumerate(groups):
+        columns[index % 3].append(group)
+    return render(request, 'reports/physician_drug_list.html', {
+        'groups': groups,
+        'columns': columns,
+        'show_marks': request.GET.get('marks', '1') != '0',
+        'categories': _report_categories(),
+        'selected_categories': selected,
+    })
+
+
+@login_required_custom
+def report_pharmacist_drug_list(request):
+    today = timezone.now().date()
+    selected_month = _report_date(request.GET.get('month'), today.replace(day=1))
+    days_in_month = monthrange(selected_month.year, selected_month.month)[1]
+    selected = _selected_categories(request)
+    medicines = Medicine.objects.all().order_by('category', 'id')
+    if selected:
+        medicines = medicines.filter(category__in=selected)
+    first_day = selected_month.replace(day=1)
+    last_day = selected_month.replace(day=days_in_month)
+    rows = []
+    for medicine in medicines:
+        rows.append({
+            'medicine': medicine,
+            'daily_values': [
+                _availability_mark(medicine, _stock_at_date(
+                    medicine, date(selected_month.year, selected_month.month, day)
+                ))
+                for day in range(1, days_in_month + 1)
+            ],
+        })
+    return render(request, 'reports/pharmacist_drug_list.html', {
+        'rows': rows,
+        'days': range(1, days_in_month + 1),
+        'month': selected_month,
+        'categories': _report_categories(),
+        'selected_categories': selected,
+    })
+
+
+@login_required_custom
+def report_monthly_average_consumption(request):
+    today = timezone.now().date()
+    selected_month = _report_date(request.GET.get('month'), today.replace(day=1))
+    months = []
+    for offset in range(2, -1, -1):
+        month = selected_month.month - offset
+        year = selected_month.year
+        while month <= 0:
+            month += 12
+            year -= 1
+        months.append(date(year, month, 1))
+
+    rows = []
+    for medicine in Medicine.objects.exclude(is_vaccine=True).order_by('category', 'id'):
+        monthly = []
+        for month in months:
+            last_day = date(month.year, month.month, monthrange(month.year, month.month)[1])
+            after_received, after_dispensed, after_internal, after_disposed = _movement_totals(
+                [medicine.id], start=last_day + timedelta(days=1)
+            )
+            stock_at_start = medicine.current_stock - after_received.get(medicine.id, 0)
+            stock_at_start += after_dispensed.get(medicine.id, 0)
+            stock_at_start += after_internal.get(medicine.id, 0)
+            stock_at_start += after_disposed.get(medicine.id, 0)
+            month_dispensed = (
+                _movement_totals([medicine.id], start=month, end=last_day)[1].get(medicine.id, 0)
+                + _movement_totals([medicine.id], start=month, end=last_day)[2].get(medicine.id, 0)
+            )
+            month_received = _movement_totals([medicine.id], start=month, end=last_day)[0].get(medicine.id, 0)
+            month_disposed = _movement_totals([medicine.id], start=month, end=last_day)[3].get(medicine.id, 0)
+            balance = stock_at_start + month_received - month_dispensed - month_disposed
+            out_of_stock = stock_at_start <= 0 or balance <= 0
+            monthly.append({'consumption': month_dispensed, 'out_of_stock': out_of_stock})
+        valid = [item['consumption'] for item in monthly if not item['out_of_stock']]
+        average = max(item['consumption'] for item in monthly) if not valid else sum(valid) / len(valid)
+        rows.append({'medicine': medicine, 'months': monthly, 'average': average})
+    return render(request, 'reports/monthly_average_consumption.html', {
+        'rows': rows,
+        'months': months,
+        'selected_month': selected_month,
+    })
+
+
+@login_required_custom
+def report_vaccine_movement(request):
+    today = timezone.now().date()
+    start_date = _report_date(request.GET.get('from'), today.replace(day=1))
+    end_date = _report_date(request.GET.get('to'), today)
+    rows = []
+    for medicine in Medicine.objects.filter(is_vaccine=True).order_by('category', 'id'):
+        def vaccine_total(start, end, action=None):
+            queryset = VaccineDispensingItem.objects.filter(
+                medicine=medicine, dispensing__dispensing_date__range=(start, end)
+            )
+            if action:
+                queryset = queryset.filter(action=action)
+            return queryset.aggregate(total=Sum('quantity_doses'))['total'] or 0
+
+        received_qs = OrderItem.objects.filter(
+            medicine=medicine, order__status='Delivered'
+        ).annotate(effective=models.Case(
+            models.When(order__receive_date__isnull=False, then=models.F('order__receive_date')),
+            default=models.F('order__order_date'), output_field=models.DateField(),
+        ))
+        received_before = received_qs.filter(effective__lt=start_date).aggregate(total=Sum('quantity_received'))['total'] or 0
+        received = received_qs.filter(effective__range=(start_date, end_date)).aggregate(total=Sum('quantity_received'))['total'] or 0
+        doses = medicine.doses_per_vial or 1
+        opening = received_before * doses - vaccine_total(date.min, start_date - timedelta(days=1), 'dispensed') - vaccine_total(date.min, start_date - timedelta(days=1), 'waste') - vaccine_total(date.min, start_date - timedelta(days=1), 'disposal')
+        dispensed = vaccine_total(start_date, end_date, 'dispensed')
+        wasted = vaccine_total(start_date, end_date, 'waste')
+        disposed = vaccine_total(start_date, end_date, 'disposal')
+        used = dispensed + wasted + disposed
+        total = opening + received * doses
+        if total or used or medicine.current_stock:
+            rows.append({'medicine': medicine, 'opening': opening, 'received': received * doses,
+                         'total': total, 'dispensed': dispensed, 'wasted': wasted,
+                         'disposed': disposed, 'used': used, 'remaining': total - used})
+    return render(request, 'reports/vaccine_movement.html', {
+        'rows': rows, 'start_date': start_date, 'end_date': end_date,
+    })
 
 
 
@@ -2013,7 +2243,7 @@ def report_current_stock(request):
             ),
         )
     ).select_related('medicine').distinct().order_by(
-        'medicine__category', 'medicine__name', 'expiry_date'
+        'medicine__category', 'medicine_id', 'expiry_date'
     )
     
     return render(request, 'reports/current_stock.html', {
@@ -2031,7 +2261,7 @@ def report_expiry(request):
         expiry_date__gte=today,
         expiry_date__lte=six_months,
         quantity_remaining__gt=0
-    ).select_related('medicine').order_by('expiry_date')
+    ).select_related('medicine').order_by('medicine__category', 'medicine_id', 'expiry_date')
     return render(request, 'reports/expiry.html', {
         'batches': batches,
         'today': today,

@@ -27,8 +27,8 @@
                 <tr>
                     <td><strong>{{ row.medicine.name }}</strong></td>
                     <td>{{ row.medicine.category|default:'—' }}</td>
-                    <td>{{ row.zero_date|date:"d/m/Y" }}</td>
-                    <td>{{ row.last_supply_date|date:"d/m/Y" }}</td>
+                    <td>{{ row.zero_date|date:"Y/m/d" }}</td>
+                    <td>{{ row.last_supply_date|date:"Y/m/d" }}</td>
                 </tr>
                 {% endfor %}
             </tbody>

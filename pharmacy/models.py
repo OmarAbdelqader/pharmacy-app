@@ -94,7 +94,7 @@ class Medicine(TimeStampedModel):
         if self.current_stock < 0:
             raise ValidationError({'current_stock': 'لا يمكن أن يكون المخزون الحالي قيمة سالبة'})
         if self.reorder_level < 0:
-            raise ValidationError({'reorder_level': 'لا يمكن أن يكون حد إعادة الطلب قيمة سالبة'})
+            raise ValidationError({'reorder_level': 'لا يمكن أن يكون المتوسط قيمة سالبة'})
         if self.default_dispense_qty is not None and self.default_dispense_qty <= 0:
             raise ValidationError({'default_dispense_qty': 'يجب أن تكون الكمية الافتراضية أكبر من الصفر'})
         if self.product_type == 'syringe' and not self.syringe_size:
@@ -275,8 +275,8 @@ class OrderHeader(TimeStampedModel):
         indexes = [
             models.Index(fields=['status', '-order_date']),
         ]
-        verbose_name = 'طلب شراء'
-        verbose_name_plural = 'طلبات الشراء'
+        verbose_name = 'وارد'
+        verbose_name_plural = 'وارد'
 
     def __str__(self):
         return f"{self.po_number} - {self.supplier.name}"

@@ -53,6 +53,7 @@ urlpatterns = [
     path('orders/', views.order_list, name='order_list'),
     path('orders/add/', views.order_add, name='order_add'),
     path('orders/<int:pk>/edit/', views.order_edit, name='order_edit'),
+    path('orders/<int:pk>/print/', views.order_print, name='order_print'),
     path('orders/<int:pk>/delete/', views.order_delete, name='order_delete'),
 
     # Reports
@@ -63,6 +64,10 @@ urlpatterns = [
     path('reports/under-supply/', views.report_under_supply, name='report_under_supply'),
     path('reports/low-stock/', views.report_low_stock, name='report_low_stock'),
     path('reports/daily-dispensing/', views.report_daily_dispensing, name='report_daily_dispensing'),
+    path('reports/physician-drug-list/', views.report_physician_drug_list, name='report_physician_drug_list'),
+    path('reports/pharmacist-drug-list/', views.report_pharmacist_drug_list, name='report_pharmacist_drug_list'),
+    path('reports/monthly-average-consumption/', views.report_monthly_average_consumption, name='report_monthly_average_consumption'),
+    path('reports/vaccine-movement/', views.report_vaccine_movement, name='report_vaccine_movement'),
 
     # Users
     path('users/', views.user_list, name='user_list'),

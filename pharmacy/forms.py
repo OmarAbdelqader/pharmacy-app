@@ -82,7 +82,7 @@ class MedicineForm(forms.ModelForm):
             'category': 'نوع الصنف',
             'book_reference': 'دفتر 118',
             'unit': 'الوحدة',
-            'reorder_level': 'حد إعادة الطلب',
+            'reorder_level': 'المتوسط',
             'default_dispense_qty': 'الكمية الافتراضية للصرف',
             'product_type': 'نوع المنتج',
             'syringe_size': 'مقاس السرنجة',
