@@ -2199,7 +2199,7 @@ def report_stock_movement(request):
         )
         closing_stock = opening_stock + purchased - dispensed
 
-        if purchased == 0 and dispensed == 0:
+        if opening_stock <= 0 and purchased == 0 and dispensed == 0:
             continue
 
         nearest_batch = medicine.available_batches[0] if medicine.available_batches else None

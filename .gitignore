@@ -48,3 +48,9 @@ Thumbs.db
 *~
 bug_1.jpg
 form1.png
+
+# Offline deployment artifacts and local launcher logs
+deployment/
+offline-packages/
+logs/
+staticfiles/

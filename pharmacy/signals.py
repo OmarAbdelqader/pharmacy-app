@@ -16,6 +16,21 @@ def save_user_profile(sender, instance, **kwargs):
     if hasattr(instance, 'profile'):
         instance.profile.save()
 
+@receiver(post_save, sender=User)
+def sync_profile_role(sender, instance, created, **kwargs):
+    try:
+        profile = instance.profile
+    except UserProfile.DoesNotExist:
+        profile = UserProfile.objects.create(user=instance)
+
+    # if the user is a superuser, ensure their profile role is 'Admin'
+    if instance.is_superuser:
+        profile.role = 'Admin'
+    # if user in not superuser, ensure their profile role is not 'Admin'
+    elif profile.role == 'Admin':
+        profile.role = 'pharmacist'
+
+    profile.save()
 
 def _skip_flag(instance):
     """Check if an instance has the stock-update skip flag set (used by views

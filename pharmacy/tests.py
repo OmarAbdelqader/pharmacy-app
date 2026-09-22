@@ -214,6 +214,44 @@ class StockMovementReportTests(TestCase):
         self.assertEqual(row['opening_stock'], 3)
         self.assertEqual(row['closing_stock'], 10)
 
+    def test_report_includes_positive_opening_stock_without_period_activity(self):
+        user = User.objects.create_user(username='opening-stock-user', password='testpass')
+        supplier = Supplier.objects.create(name='Opening Stock Supplier')
+        medicine = Medicine.objects.create(name='Opening Stock Medicine')
+        inactive_medicine = Medicine.objects.create(name='Inactive Medicine')
+        order = OrderHeader.objects.create(
+            supplier=supplier,
+            order_date=date(2026, 1, 1),
+            receive_date=date(2026, 1, 2),
+            status='Delivered',
+            created_by=user,
+            updated_by=user,
+        )
+        OrderItem.objects.create(
+            order=order,
+            medicine=medicine,
+            quantity_ordered=5,
+            quantity_received=5,
+            batch_number='OPENING-1',
+            expiry_date=date(2029, 12, 1),
+            created_by=user,
+            updated_by=user,
+        )
+
+        self.client.force_login(user)
+        response = self.client.get(
+            '/reports/stock-movement/',
+            {'from': '2026-04-01', 'to': '2026-04-30'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.context['rows']
+        self.assertEqual([row['medicine'] for row in rows], [medicine])
+        self.assertEqual(rows[0]['opening_stock'], 5)
+        self.assertEqual(rows[0]['purchased'], 0)
+        self.assertEqual(rows[0]['dispensed'], 0)
+        self.assertNotIn(inactive_medicine, [row['medicine'] for row in rows])
+
 
 class VaccineDispensingTests(TestCase):
     def setUp(self):
