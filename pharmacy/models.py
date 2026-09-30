@@ -617,7 +617,7 @@ class UserProfile(models.Model):
 
     @property
     def is_admin(self):
-        return self.role == 'admin'
+        return self.user.is_superuser or self.role.lower() == 'admin'
 
     @property
     def is_pharmacist(self):

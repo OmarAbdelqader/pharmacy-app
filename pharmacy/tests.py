@@ -155,6 +155,8 @@ class OrderItemSaveTests(TestCase):
         admin_user = User.objects.create_user(username='admin-user', password='testpass')
         admin_user.profile.role = 'admin'
         admin_user.profile.save()
+        self.assertTrue(admin_user.profile.is_admin)
+        self.assertTrue(UserProfile.objects.get(user=admin_user).is_admin)
         self.client.force_login(admin_user)
 
         response = self.client.post('/users/add/', {
@@ -170,6 +172,27 @@ class OrderItemSaveTests(TestCase):
         created_user = User.objects.get(username='new-pharmacist')
         self.assertEqual(UserProfile.objects.filter(user=created_user).count(), 1)
         self.assertEqual(created_user.profile.role, 'pharmacist')
+
+    def test_existing_superuser_is_admin_even_with_pharmacist_profile(self):
+        admin_user = User.objects.create_superuser(
+            username='legacy-superuser', password='testpass'
+        )
+        admin_user.profile.role = 'pharmacist'
+        admin_user.profile.save()
+        self.client.force_login(admin_user)
+
+        dashboard_response = self.client.get(reverse('dashboard'))
+        protected_response = self.client.get(reverse('stock_disposal_list'))
+
+        self.assertContains(dashboard_response, 'مدير')
+        self.assertEqual(protected_response.status_code, 200)
+
+    def test_superuser_profile_role_uses_valid_choice(self):
+        admin_user = User.objects.create_superuser(
+            username='new-superuser', password='testpass'
+        )
+
+        self.assertEqual(admin_user.profile.role, 'admin')
 
 
 class StockMovementReportTests(TestCase):

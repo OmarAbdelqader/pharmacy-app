@@ -23,10 +23,9 @@ def sync_profile_role(sender, instance, created, **kwargs):
     except UserProfile.DoesNotExist:
         profile = UserProfile.objects.create(user=instance)
 
-    # if the user is a superuser, ensure their profile role is 'Admin'
+    # Keep the stored role aligned with the model's lowercase choices.
     if instance.is_superuser:
-        profile.role = 'Admin'
-    # if user in not superuser, ensure their profile role is not 'Admin'
+        profile.role = 'admin'
     elif profile.role == 'Admin':
         profile.role = 'pharmacist'
 
