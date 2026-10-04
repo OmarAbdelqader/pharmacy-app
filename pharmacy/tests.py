@@ -757,6 +757,60 @@ class InternalDispensingTests(TestCase):
             'item_quantity[]': str(quantity),
         }
 
+    def test_list_search_matches_destination_and_permit_reference(self):
+        destination_record = InternalDispensing.objects.create(
+            dispensing_date=date(2026, 9, 6),
+            destination_name='Ward Searchable',
+            destination_reference='PERMIT-001',
+        )
+        reference_record = InternalDispensing.objects.create(
+            dispensing_date=date(2026, 9, 6),
+            destination_name='Another Ward',
+            destination_reference='REF-SEARCH-002',
+        )
+
+        destination_response = self.client.get(
+            '/internal-dispensing/', {'search': 'Searchable'}
+        )
+        reference_response = self.client.get(
+            '/internal-dispensing/', {'search': 'SEARCH-002'}
+        )
+
+        self.assertEqual(
+            list(destination_response.context['records'].object_list),
+            [destination_record],
+        )
+        self.assertEqual(
+            list(reference_response.context['records'].object_list),
+            [reference_record],
+        )
+
+    def test_list_pagination_renders_links_and_keeps_search_filter(self):
+        for index in range(21):
+            InternalDispensing.objects.create(
+                dispensing_date=date(2026, 9, 6),
+                destination_name=f'Ward {index}',
+                destination_reference=f'PERMIT-{index:02d}',
+            )
+
+        first_page = self.client.get(
+            '/internal-dispensing/', {'search': 'Ward', 'date': '2026-09-06'}
+        )
+        second_page = self.client.get(
+            '/internal-dispensing/', {
+                'search': 'Ward', 'date': '2026-09-06', 'page': '2',
+            }
+        )
+
+        self.assertContains(first_page, 'page=2')
+        self.assertEqual(
+            first_page.context['query_string'],
+            'search=Ward&date=2026-09-06',
+        )
+        self.assertEqual(first_page.context['page_obj'].number, 1)
+        self.assertEqual(second_page.context['page_obj'].number, 2)
+        self.assertEqual(len(second_page.context['records']), 1)
+
     def test_internal_transfer_moves_stock_with_batch_metadata(self):
         response = self.client.post('/internal-dispensing/add/', self.transfer_data())
 

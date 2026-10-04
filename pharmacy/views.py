@@ -1336,16 +1336,26 @@ def stock_disposal_add(request):
 @login_required_custom
 def internal_dispensing_list(request):
     date_filter = request.GET.get('date', '')
+    search = request.GET.get('search', '').strip()
     records = InternalDispensing.objects.select_related(
         'destination_medicine', 'created_by'
     ).annotate(item_count=Count('items')).order_by('-dispensing_date', '-id')
     if date_filter:
         records = records.filter(dispensing_date=date_filter)
+    if search:
+        records = records.filter(
+            Q(destination_name__icontains=search) |
+            Q(destination_reference__icontains=search)
+        )
     page_obj = paginate_queryset(request, records)
+    query_params = request.GET.copy()
+    query_params.pop('page', None)
     return render(request, 'internal_dispensing/list.html', {
         'records': page_obj,
         'date_filter': date_filter,
+        'search': search,
         'page_obj': page_obj,
+        'query_string': query_params.urlencode(),
     })
 
 
