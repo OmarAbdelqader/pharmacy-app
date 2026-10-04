@@ -1042,11 +1042,25 @@ def _restore_vaccine_movement(movement):
 
 def _has_later_vaccine_dependencies(movement):
     allocated_vial_ids = set()
+    batch_ids = set()
     for item in movement.items.all():
         allocated_vial_ids.update(str(vial_id) for vial_id in item.vial_consumption)
         allocated_vial_ids.update(str(vial_id) for vial_id in item.created_vial_ids)
+        batch_ids.add(item.batch_id)
     if not allocated_vial_ids:
         return False
+
+    admin_adjustment_references = Q()
+    for vial_id in allocated_vial_ids:
+        admin_adjustment_references |= Q(
+            reference__contains=f'Vial #{vial_id} admin adjustment by '
+        )
+    if StockMovement.objects.filter(
+        batch_id__in=batch_ids,
+        movement_type='vaccine_dose',
+        created_at__gt=movement.created_at,
+    ).filter(admin_adjustment_references).exists():
+        return True
 
     later_movements = VaccineDispensing.objects.filter(
         items__dispensing__dispensing_date__gte=movement.dispensing_date,

@@ -403,6 +403,11 @@ class VaccineDispensingTests(TestCase):
         self.user = User.objects.create_user(username='vaccine-user', password='testpass')
         self.user.profile.role = 'admin'
         self.user.profile.save()
+        self.admin_user = User.objects.create_superuser(
+            username='vaccine-admin',
+            email='vaccine-admin@example.com',
+            password='testpass',
+        )
         self.vaccine = Medicine.objects.create(
             name='Test vaccine',
             is_vaccine=True,
@@ -454,6 +459,132 @@ class VaccineDispensingTests(TestCase):
             'item_action[]': action,
             'item_quantity[]': str(quantity),
         }
+
+    def admin_vial_data(self, doses_remaining=5, correction_reason=''):
+        return {
+            'batch': str(self.batch.pk),
+            'opened_date': '2026-09-06',
+            'disposal_date': '2026-09-07',
+            'doses_remaining': str(doses_remaining),
+            'disposed': '',
+            'correction_reason': correction_reason,
+        }
+
+    def test_admin_can_open_vial_and_decrements_batch_stock(self):
+        self.client.force_login(self.admin_user)
+
+        response = self.client.post(
+            reverse('admin:pharmacy_vaccinevial_add'),
+            self.admin_vial_data(),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.batch.refresh_from_db()
+        self.vaccine.refresh_from_db()
+        vial = VaccineVial.objects.get()
+        self.assertEqual(vial.doses_remaining, 5)
+        self.assertEqual(self.batch.quantity_remaining, 2)
+        self.assertEqual(self.vaccine.current_stock, 2)
+
+    def test_admin_dose_change_creates_audited_dose_movement(self):
+        vial = VaccineVial.objects.create(
+            batch=self.batch,
+            opened_date=date(2026, 9, 6),
+            disposal_date=date(2026, 9, 7),
+            doses_remaining=5,
+        )
+        self.client.force_login(self.admin_user)
+        data = self.admin_vial_data(doses_remaining=3, correction_reason='Counted vial')
+
+        response = self.client.post(
+            reverse('admin:pharmacy_vaccinevial_change', args=[vial.pk]),
+            data,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        vial.refresh_from_db()
+        movement = StockMovement.objects.get(movement_type='vaccine_dose')
+        self.assertEqual(vial.doses_remaining, 3)
+        self.assertEqual(movement.quantity_delta, -2)
+        self.assertEqual(movement.quantity_unit, 'جرعة')
+        self.assertFalse(movement.affects_stock_balance)
+        self.assertIn(f'Vial #{vial.pk}', movement.reference)
+        self.assertIn(self.admin_user.username, movement.reference)
+        self.assertIn('Counted vial', movement.reference)
+
+    def test_admin_cannot_open_vial_without_unopened_batch_stock(self):
+        Batch.objects.filter(pk=self.batch.pk).update(quantity_remaining=0)
+        self.client.force_login(self.admin_user)
+
+        response = self.client.post(
+            reverse('admin:pharmacy_vaccinevial_add'),
+            self.admin_vial_data(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(VaccineVial.objects.exists())
+        self.assertContains(response, 'لا توجد فيالات غير مفتوحة متبقية في التشغيلة')
+
+    def test_admin_cannot_open_non_vaccine_batch(self):
+        self.client.force_login(self.admin_user)
+        data = self.admin_vial_data()
+        data['batch'] = str(self.syringe_batch.pk)
+
+        response = self.client.post(reverse('admin:pharmacy_vaccinevial_add'), data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(VaccineVial.objects.exists())
+
+    def test_admin_cannot_open_vial_above_dose_capacity(self):
+        self.client.force_login(self.admin_user)
+
+        response = self.client.post(
+            reverse('admin:pharmacy_vaccinevial_add'),
+            self.admin_vial_data(doses_remaining=6),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(VaccineVial.objects.exists())
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.quantity_remaining, 3)
+
+    def test_admin_dose_change_requires_reason(self):
+        vial = VaccineVial.objects.create(
+            batch=self.batch,
+            opened_date=date(2026, 9, 6),
+            disposal_date=date(2026, 9, 7),
+            doses_remaining=5,
+        )
+        self.client.force_login(self.admin_user)
+
+        response = self.client.post(
+            reverse('admin:pharmacy_vaccinevial_change', args=[vial.pk]),
+            self.admin_vial_data(doses_remaining=4),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        vial.refresh_from_db()
+        self.assertEqual(vial.doses_remaining, 5)
+        self.assertFalse(StockMovement.objects.filter(movement_type='vaccine_dose').exists())
+
+    def test_later_admin_dose_correction_blocks_earlier_movement_reversal(self):
+        self.client.post('/vaccines/add/', self.movement_data(quantity=2))
+        movement = VaccineDispensing.objects.get()
+        vial = VaccineVial.objects.get()
+        self.client.force_login(self.admin_user)
+        response = self.client.post(
+            reverse('admin:pharmacy_vaccinevial_change', args=[vial.pk]),
+            self.admin_vial_data(doses_remaining=2, correction_reason='Physical recount'),
+        )
+        self.assertEqual(response.status_code, 302)
+
+        response = self.client.post(f'/vaccines/{movement.pk}/delete/', follow=True)
+
+        self.assertRedirects(response, '/vaccines/')
+        self.assertContains(response, 'حركة لاحقة تستخدم جرعات من نفس الفيالة')
+        self.assertTrue(VaccineDispensing.objects.filter(pk=movement.pk).exists())
+        vial.refresh_from_db()
+        self.assertEqual(vial.doses_remaining, 2)
 
     def test_opening_vial_counts_one_vial_and_consumes_doses(self):
         response = self.client.post('/vaccines/add/', self.movement_data(quantity=2))
