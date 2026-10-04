@@ -266,14 +266,10 @@ function addItemByCode() {
         return;
     }
 
-    // Find medicine by code
-    let found = null;
-    for (const medicine of medicines) {
-        if (medicine.codes.includes(code) ||
-            medicine.id.toString() === code) {
-            found = medicine;
-            break;
-        }
+    // Exact saved codes take precedence over internal medicine IDs.
+    let found = medicines.find(medicine => medicine.codes.includes(code));
+    if (!found) {
+        found = medicines.find(medicine => medicine.id.toString() === code);
     }
 
     if (!found) {
