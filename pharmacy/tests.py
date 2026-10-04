@@ -11,9 +11,9 @@ from .models import (
     Batch, Medicine, MedicineCode, OrderHeader, OrderItem, Supplier,
     InternalDispensing, InternalDispensingItem,
     VaccineDispensing, VaccineDispensingItem, VaccineVial, StockDisposal,
-    UserProfile,
+    UserProfile, Prescription, DispensingItem, StockMovement,
 )
-from .views import _get_medicines_json, _save_order_items
+from .views import _get_medicines_json, _save_order_items, _restore_order_stock
 
 
 class OrderItemSaveTests(TestCase):
@@ -66,6 +66,50 @@ class OrderItemSaveTests(TestCase):
         self.assertTrue(Batch.objects.filter(medicine=self.medicine, batch_number='B-001').exists())
         self.medicine.refresh_from_db()
         self.assertEqual(self.medicine.current_stock, 5)
+        movement = StockMovement.objects.get(medicine=self.medicine)
+        self.assertEqual(movement.movement_type, 'receipt')
+        self.assertEqual(movement.quantity_delta, 5)
+        self.assertEqual(movement.batch_number, 'B-001')
+        self.assertEqual(movement.po_number, self.order.po_number)
+        self.assertEqual(movement.movement_date, self.order.receive_date)
+
+        self.client.force_login(self.user)
+        response = self.client.get(reverse('medicine_history'), {
+            'medicine': self.medicine.pk,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.order.po_number)
+        self.assertContains(response, 'B-001')
+
+    def test_dispensing_save_and_delete_create_signed_history(self):
+        batch = Batch(
+            medicine=self.medicine,
+            batch_number='DISPENSE-01',
+            expiry_date=date(2030, 6, 30),
+            quantity_received=10,
+            quantity_remaining=10,
+        )
+        batch._skip_stock_signal = True
+        batch.save()
+        self.medicine.current_stock = 10
+        self.medicine.save(update_fields=['current_stock'])
+        prescription = Prescription.objects.create(
+            prescription_ref='RX-HISTORY',
+            dispensing_date=date(2026, 9, 7),
+        )
+        item = DispensingItem.objects.create(
+            prescription=prescription,
+            medicine=self.medicine,
+            batch=batch,
+            quantity_dispensed=3,
+        )
+
+        item.delete()
+
+        movements = list(StockMovement.objects.filter(
+            medicine=self.medicine
+        ).order_by('id').values_list('movement_type', 'quantity_delta'))
+        self.assertEqual(movements[-2:], [('dispense', -3), ('correction', 3)])
 
     def test_pending_order_does_not_update_stock(self):
         self.order.status = 'Pending'
@@ -105,6 +149,42 @@ class OrderItemSaveTests(TestCase):
         self.medicine.refresh_from_db()
         self.assertEqual(self.medicine.current_stock, 0)
         self.assertFalse(Batch.objects.filter(batch_number='PENDING-SIGNAL').exists())
+
+    def test_programmatic_delivered_order_item_records_one_receipt(self):
+        OrderItem.objects.create(
+            order=self.order,
+            medicine=self.medicine,
+            quantity_ordered=8,
+            quantity_received=5,
+            batch_number='SIGNAL-RECEIPT',
+            expiry_date=date(2030, 1, 1),
+        )
+
+        self.medicine.refresh_from_db()
+        self.assertEqual(self.medicine.current_stock, 5)
+        self.assertEqual(Batch.objects.get(batch_number='SIGNAL-RECEIPT').quantity_remaining, 5)
+        movement = StockMovement.objects.get(medicine=self.medicine)
+        self.assertEqual(movement.quantity_delta, 5)
+        self.assertEqual(movement.po_number, self.order.po_number)
+
+    def test_order_reversal_restores_blank_batch_number_receipt(self):
+        OrderItem.objects.create(
+            order=self.order,
+            medicine=self.medicine,
+            quantity_received=5,
+            batch_number='',
+            expiry_date=date(2030, 1, 1),
+        )
+
+        _restore_order_stock(self.order)
+
+        self.medicine.refresh_from_db()
+        self.assertEqual(self.medicine.current_stock, 0)
+        self.assertFalse(Batch.objects.filter(medicine=self.medicine).exists())
+        self.assertEqual(list(StockMovement.objects.filter(
+            medicine=self.medicine
+        ).order_by('id').values_list('movement_type', 'quantity_delta')),
+            [('receipt', 5), ('correction', -5)])
 
     def test_delivered_form_requires_actual_receive_date(self):
         form = OrderHeaderForm(data={
@@ -405,6 +485,17 @@ class VaccineDispensingTests(TestCase):
         self.assertEqual(VaccineVial.objects.get().doses_remaining, 2)
         self.assertEqual(VaccineDispensingItem.objects.filter(action='dispensed').get().vials_opened, 1)
         self.assertEqual(VaccineDispensingItem.objects.filter(action='waste').get().vials_opened, 0)
+        dose_movements = list(StockMovement.objects.filter(
+            medicine=self.vaccine,
+            movement_type='vaccine_dose',
+        ).order_by('id').values_list('quantity_delta', 'quantity_unit', 'affects_stock_balance'))
+        self.assertEqual(dose_movements, [(-2, 'جرعة', False), (-1, 'جرعة', False)])
+
+        response = self.client.get(reverse('medicine_history'), {
+            'medicine': self.vaccine.pk,
+        })
+        self.assertContains(response, 'تغير جرعات تطعيم')
+        self.assertContains(response, 'جرعة')
 
     def test_manual_disposal_reduces_syringe_batch_stock(self):
         response = self.client.post('/stock-disposals/add/', {
@@ -550,6 +641,13 @@ class InternalDispensingTests(TestCase):
         self.assertEqual(received_batch.quantity_remaining, 5)
         self.assertEqual(self.destination.current_stock, 5)
         self.assertEqual(InternalDispensingItem.objects.count(), 1)
+        movements = list(StockMovement.objects.filter(
+            reference__contains='Internal dispensing'
+        ).order_by('movement_type').values_list('medicine_id', 'movement_type', 'quantity_delta'))
+        self.assertEqual(movements, [
+            (self.destination.pk, 'internal_in', 5),
+            (self.source.pk, 'internal_out', -5),
+        ])
 
     def test_external_transfer_only_consumes_source_stock(self):
         response = self.client.post(

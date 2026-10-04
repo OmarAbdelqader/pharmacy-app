@@ -1,8 +1,9 @@
-from django.db.models.signals import post_save, post_delete, pre_save
+from django.db.models.signals import post_save, post_delete, pre_delete, pre_save
 from django.dispatch import receiver
-from django.db import models
+from django.db import models, transaction
 from django.contrib.auth.models import User
-from .models import UserProfile, Batch, DispensingItem, OrderItem, Medicine
+from .models import UserProfile, Batch, DispensingItem, OrderItem, Medicine, Prescription
+from .stock_history import record_stock_movement
 
 
 @receiver(post_save, sender=User)
@@ -37,6 +38,28 @@ def _skip_flag(instance):
     return getattr(instance, '_skip_stock_signal', False)
 
 
+@receiver(pre_save, sender=Medicine)
+def _medicine_store_old_stock(sender, instance, **kwargs):
+    if instance.pk:
+        instance._old_current_stock = Medicine.objects.filter(pk=instance.pk).values_list(
+            'current_stock', flat=True
+        ).first() or 0
+    else:
+        instance._old_current_stock = 0
+
+
+@receiver(post_save, sender=Medicine)
+def _medicine_record_stock_adjustment(sender, instance, created, **kwargs):
+    delta = instance.current_stock - getattr(instance, '_old_current_stock', 0)
+    if delta:
+        record_stock_movement(
+            instance,
+            'adjustment',
+            delta,
+            reference='Manual medicine stock adjustment',
+        )
+
+
 # ─── Batch → Medicine.current_stock sync (for manual batch changes) ───────
 
 @receiver(pre_save, sender=Batch)
@@ -53,6 +76,7 @@ def _batch_store_old_remaining(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender=Batch)
+@transaction.atomic
 def _batch_sync_medicine_stock(sender, instance, created, **kwargs):
     if _skip_flag(instance):
         return
@@ -62,15 +86,30 @@ def _batch_sync_medicine_stock(sender, instance, created, **kwargs):
         Medicine.objects.filter(pk=instance.medicine_id).update(
             current_stock=models.F('current_stock') + delta
         )
+        record_stock_movement(
+            instance.medicine,
+            'adjustment',
+            delta,
+            batch=instance,
+            reference=f'Manual batch update #{instance.pk}',
+        )
 
 
 @receiver(post_delete, sender=Batch)
+@transaction.atomic
 def _batch_delete_restore_medicine_stock(sender, instance, **kwargs):
     if _skip_flag(instance):
         return
     if instance.quantity_remaining and instance.medicine_id:
         Medicine.objects.filter(pk=instance.medicine_id).update(
             current_stock=models.F('current_stock') - instance.quantity_remaining
+        )
+        record_stock_movement(
+            instance.medicine,
+            'adjustment',
+            -instance.quantity_remaining,
+            batch_number=instance.batch_number,
+            reference=f'Batch #{instance.pk} deleted',
         )
 
 
@@ -95,6 +134,7 @@ def _dispensing_store_old_qty(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender=DispensingItem)
+@transaction.atomic
 def _dispensing_sync_stock(sender, instance, created, **kwargs):
     if _skip_flag(instance):
         return
@@ -114,6 +154,15 @@ def _dispensing_sync_stock(sender, instance, created, **kwargs):
         Medicine.objects.filter(pk=old_medicine_id).update(
             current_stock=models.F('current_stock') + old_qty
         )
+        old_batch = Batch.objects.filter(pk=old_batch_id).first()
+        record_stock_movement(
+            Medicine.objects.get(pk=old_medicine_id),
+            'correction',
+            old_qty,
+            movement_date=instance.prescription.dispensing_date,
+            batch=old_batch,
+            reference=f'Prescription {instance.prescription.prescription_ref} edit reversal',
+        )
 
     # Apply new entry
     if new_qty and new_batch_id and new_medicine_id:
@@ -123,9 +172,18 @@ def _dispensing_sync_stock(sender, instance, created, **kwargs):
         Medicine.objects.filter(pk=new_medicine_id).update(
             current_stock=models.F('current_stock') - new_qty
         )
+        record_stock_movement(
+            Medicine.objects.get(pk=new_medicine_id),
+            'dispense',
+            -new_qty,
+            movement_date=instance.prescription.dispensing_date,
+            batch=Batch.objects.filter(pk=new_batch_id).first(),
+            reference=f'Prescription {instance.prescription.prescription_ref}',
+        )
 
 
 @receiver(post_delete, sender=DispensingItem)
+@transaction.atomic
 def _dispensing_delete_restore_stock(sender, instance, **kwargs):
     if _skip_flag(instance):
         return
@@ -139,11 +197,28 @@ def _dispensing_delete_restore_stock(sender, instance, **kwargs):
             Medicine.objects.filter(pk=instance.medicine_id).update(
                 current_stock=models.F('current_stock') + qty
             )
+            record_stock_movement(
+                instance.medicine,
+                'correction',
+                qty,
+                movement_date=getattr(instance, '_stock_prescription_date', None) or instance.prescription.dispensing_date,
+                batch=instance.batch,
+                reference=f'Prescription {getattr(instance, "_stock_prescription_ref", instance.prescription.prescription_ref)} deleted',
+            )
+
+
+@receiver(pre_delete, sender=DispensingItem)
+def _dispensing_store_prescription_snapshot(sender, instance, **kwargs):
+    prescription = Prescription.objects.filter(pk=instance.prescription_id).first()
+    if prescription:
+        instance._stock_prescription_date = prescription.dispensing_date
+        instance._stock_prescription_ref = prescription.prescription_ref
 
 
 # ─── OrderItem → Batch & Medicine sync (programmatic creation only) ───────
 
 @receiver(post_save, sender=OrderItem)
+@transaction.atomic
 def _orderitem_create_batch_and_stock(sender, instance, created, **kwargs):
     """Handle OrderItem creation/update done outside of views (shell/admin).
 
@@ -201,8 +276,9 @@ def _orderitem_create_batch_and_stock(sender, instance, created, **kwargs):
         if not existing.date_received:
             updates['date_received'] = received_on
         Batch.objects.filter(pk=existing.pk).update(**updates)
+        batch = existing
     else:
-        Batch.objects.create(
+        batch = Batch(
             medicine=medicine,
             batch_number=batch_number,
             expiry_date=expiry,
@@ -212,13 +288,26 @@ def _orderitem_create_batch_and_stock(sender, instance, created, **kwargs):
             created_by=instance.created_by,
             updated_by=instance.updated_by,
         )
+        batch._skip_stock_signal = True
+        batch.save()
 
     Medicine.objects.filter(pk=medicine.pk).update(
         current_stock=models.F('current_stock') + instance.quantity_received
     )
+    order = instance.order
+    record_stock_movement(
+        medicine,
+        'receipt',
+        instance.quantity_received,
+        movement_date=received_on,
+        batch=batch,
+        reference=f'Purchase order {order.po_number}',
+        po_number=order.po_number,
+    )
 
 
 @receiver(post_delete, sender=OrderItem)
+@transaction.atomic
 def _orderitem_delete_reverse_stock(sender, instance, **kwargs):
     if _skip_flag(instance):
         return
@@ -227,24 +316,60 @@ def _orderitem_delete_reverse_stock(sender, instance, **kwargs):
     if not instance.medicine_id:
         return
 
+    from .models import OrderHeader
+    order = OrderHeader.objects.filter(pk=instance.order_id).first()
+    order_status = getattr(instance, '_stock_order_status', None) or (
+        order.status if order else None
+    )
+    if order_status != 'Delivered':
+        return
+    po_number = getattr(instance, '_stock_order_po_number', '') or (
+        order.po_number if order else ''
+    )
+    received_on = getattr(instance, '_stock_order_receive_date', None) or (
+        order.effective_receive_date if order else None
+    )
+    batch = Batch.objects.filter(
+        medicine_id=instance.medicine_id,
+        batch_number=instance.batch_number or 'N/A',
+    ).first()
+    record_stock_movement(
+        instance.medicine,
+        'correction',
+        -instance.quantity_received,
+        movement_date=received_on,
+        batch=batch,
+        reference=f'Purchase order {po_number} line deleted',
+        po_number=po_number,
+    )
+
     Medicine.objects.filter(pk=instance.medicine_id).update(
         current_stock=models.F('current_stock') - instance.quantity_received
     )
     # If a matching batch was created, try to remove the received qty from it.
-    if instance.batch_number:
-        existing = Batch.objects.filter(
-            medicine_id=instance.medicine_id,
-            batch_number=instance.batch_number,
-        ).first()
-        if existing:
-            new_remaining = existing.quantity_remaining - instance.quantity_received
-            new_received = existing.quantity_received - instance.quantity_received
-            if new_remaining <= 0 and new_received <= 0:
-                existing._skip_stock_signal = True
-                existing.delete()
-            else:
-                Batch.objects.filter(pk=existing.pk).update(
-                    quantity_remaining=max(0, new_remaining),
-                    quantity_received=max(0, new_received),
-                )
+    existing = Batch.objects.filter(
+        medicine_id=instance.medicine_id,
+        batch_number=instance.batch_number or 'N/A',
+    ).first()
+    if existing:
+        new_remaining = existing.quantity_remaining - instance.quantity_received
+        new_received = existing.quantity_received - instance.quantity_received
+        if new_remaining <= 0 and new_received <= 0:
+            existing._skip_stock_signal = True
+            existing.delete()
+        else:
+            Batch.objects.filter(pk=existing.pk).update(
+                quantity_remaining=max(0, new_remaining),
+                quantity_received=max(0, new_received),
+            )
     Medicine.objects.get(pk=instance.medicine_id).recompute_current_stock()
+
+
+@receiver(pre_delete, sender=OrderItem)
+def _orderitem_store_order_snapshot(sender, instance, **kwargs):
+    from .models import OrderHeader
+    order = OrderHeader.objects.filter(pk=instance.order_id).first()
+    if order:
+        instance._stock_order_po_number = order.po_number
+        instance._stock_order_receive_date = order.effective_receive_date
+        instance._stock_order_status = order.status

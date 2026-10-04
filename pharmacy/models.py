@@ -591,6 +591,52 @@ class InternalDispensingItem(TimeStampedModel):
             raise ValidationError({'batch': 'التشغيلة المختارة لا تنتمي إلى الصنف المحدد'})
         if self.destination_batch_id and self.destination_batch.medicine_id != self.destination_medicine_id:
             raise ValidationError({'destination_batch': 'تشغيلة الوجهة لا تنتمي إلى صنف الوجهة المحدد'})
+
+
+class StockMovement(models.Model):
+    MOVEMENT_TYPES = [
+        ('receipt', 'استلام'),
+        ('dispense', 'صرف'),
+        ('vaccine_dispense', 'صرف تطعيم'),
+        ('vaccine_waste', 'هدر تطعيم'),
+        ('vaccine_dose', 'تغير جرعات تطعيم'),
+        ('disposal', 'إعدام'),
+        ('internal_out', 'صرف داخلي'),
+        ('internal_in', 'استلام داخلي'),
+        ('adjustment', 'تسوية مخزون'),
+        ('correction', 'تصحيح حركة'),
+    ]
+
+    medicine = models.ForeignKey(
+        Medicine, on_delete=models.PROTECT, related_name='stock_movements'
+    )
+    batch = models.ForeignKey(
+        Batch, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='stock_movements'
+    )
+    batch_number = models.CharField(max_length=100, blank=True)
+    movement_type = models.CharField(max_length=24, choices=MOVEMENT_TYPES)
+    quantity_delta = models.IntegerField()
+    quantity_unit = models.CharField(max_length=40, blank=True)
+    affects_stock_balance = models.BooleanField(default=True)
+    movement_date = models.DateField()
+    reference = models.CharField(max_length=255, blank=True)
+    po_number = models.CharField(max_length=20, blank=True)
+    source_key = models.CharField(max_length=160, unique=True)
+    is_reconstructed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-movement_date', '-id']
+        indexes = [
+            models.Index(fields=['medicine', '-movement_date', '-id']),
+            models.Index(fields=['movement_type', 'movement_date']),
+        ]
+        verbose_name = 'حركة مخزون'
+        verbose_name_plural = 'حركات المخزون'
+
+    def __str__(self):
+        return f'{self.medicine.name} - {self.get_movement_type_display()} - {self.quantity_delta}'
     
 class UserProfile(models.Model):
     ROLE_CHOICES = [

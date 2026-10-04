@@ -11,6 +11,7 @@ urlpatterns = [
     # Medicines
     path('medicines/', views.medicine_list, name='medicine_list'),
     path('medicines/add/', views.medicine_add, name='medicine_add'),
+    path('medicines/history/', views.medicine_history, name='medicine_history'),
     path('medicines/<int:pk>/edit/', views.medicine_edit, name='medicine_edit'),
     path('medicines/<int:pk>/delete/', views.medicine_delete, name='medicine_delete'),
     path('api/medicine/<int:pk>/', views.medicine_api, name='medicine_api'),

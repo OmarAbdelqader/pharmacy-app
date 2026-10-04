@@ -1,0 +1,115 @@
+{% extends 'base.html' %}
+
+{% block title %}سجل حركة الصنف{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h4 class="mb-1">سجل حركة الصنف</h4>
+    <p class="text-muted mb-0">تتبع تغيرات المخزون والتشغيلات وأرقام أوامر الشراء</p>
+</div>
+
+<div class="table-container filter-panel mb-3">
+    <form method="get" class="row g-3 align-items-end">
+        <div class="col-md-3">
+            <label class="form-label text-muted small" for="history-search">بحث عن صنف</label>
+            <input id="history-search" type="search" name="search" value="{{ search }}" class="form-control" placeholder="الاسم أو الكود">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label text-muted small" for="history-medicine">الصنف</label>
+            <select id="history-medicine" name="medicine" class="form-select">
+                <option value="">اختر صنفاً</option>
+                {% for medicine in medicine_options %}
+                <option value="{{ medicine.pk }}" {% if selected_medicine.pk == medicine.pk %}selected{% endif %}>{{ medicine.name }}{% if medicine.book_reference %} ({{ medicine.book_reference }}){% endif %}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label text-muted small" for="history-from">من</label>
+            <input id="history-from" type="date" name="from" value="{{ start_date }}" class="form-control">
+        </div>
+        <div class="col-md-2">
+            <label class="form-label text-muted small" for="history-to">إلى</label>
+            <input id="history-to" type="date" name="to" value="{{ end_date }}" class="form-control">
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100"><i class="bi bi-search me-1"></i>عرض</button>
+        </div>
+    </form>
+</div>
+
+{% if selected_medicine %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <div>
+        <h5 class="mb-1">{{ selected_medicine.name }}</h5>
+        <span class="text-muted">{{ selected_medicine.book_reference|default:'—' }} · {{ selected_medicine.unit|default:'—' }}</span>
+    </div>
+    <div class="text-end">
+        <div class="small text-muted">الرصيد الحالي</div>
+        <strong class="fs-5">{{ selected_medicine.current_stock }}</strong>
+    </div>
+</div>
+
+<div class="table-container">
+    {% if page_obj.object_list %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>التاريخ</th>
+                    <th>نوع الحركة</th>
+                    <th>المرجع</th>
+                    <th>التشغيلة</th>
+                    <th>رقم أمر الشراء</th>
+                    <th class="text-end">التغير والوحدة</th>
+                    <th class="text-end">الرصيد بعد الحركة</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in page_obj %}
+                <tr>
+                    <td class="text-nowrap">{{ row.movement.movement_date|date:'Y-m-d' }}</td>
+                    <td>
+                        {{ row.movement.get_movement_type_display }}
+                        {% if row.movement.is_reconstructed %}<span class="badge text-bg-secondary ms-1">سجل سابق</span>{% endif %}
+                    </td>
+                    <td>{{ row.movement.reference|default:'—' }}</td>
+                    <td>{{ row.movement.batch_number|default:'—' }}</td>
+                    <td>{% if row.movement.po_number %}{{ row.movement.po_number }}{% else %}—{% endif %}</td>
+                    <td class="text-end fw-semibold {% if row.movement.quantity_delta > 0 %}text-success{% else %}text-danger{% endif %}">
+                        {% if row.movement.quantity_delta > 0 %}+{% endif %}{{ row.movement.quantity_delta }}
+                        <span class="small">{{ row.movement.quantity_unit|default:selected_medicine.unit|default:'وحدة' }}</span>
+                    </td>
+                    <td class="text-end">{{ row.balance_after }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center py-5">
+        <h5 class="mt-2">لا توجد حركات مطابقة</h5>
+        <p class="text-muted mb-0">جرّب تغيير الصنف أو نطاق التاريخ.</p>
+    </div>
+    {% endif %}
+</div>
+
+{% if page_obj.paginator.num_pages > 1 %}
+<nav class="mt-3" aria-label="صفحات سجل الحركة">
+    <ul class="pagination justify-content-center">
+        {% if page_obj.has_previous %}
+        <li class="page-item"><a class="page-link" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ page_obj.previous_page_number }}">السابق</a></li>
+        {% endif %}
+        <li class="page-item disabled"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+        {% if page_obj.has_next %}
+        <li class="page-item"><a class="page-link" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ page_obj.next_page_number }}">التالي</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% else %}
+<div class="table-container text-center py-5">
+    <h5 class="mb-2">اختر صنفاً لعرض سجله</h5>
+    <p class="text-muted mb-0">يمكن البحث بالاسم أو الكود أو مرجع الصنف.</p>
+</div>
+{% endif %}
+{% endblock %}

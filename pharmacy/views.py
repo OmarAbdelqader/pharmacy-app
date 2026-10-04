@@ -18,7 +18,7 @@ from .models import (
     Medicine, MedicineCode, Supplier, Batch, OrderHeader, OrderItem,
     Prescription, DispensingItem, InternalDispensing,
     InternalDispensingItem, UserProfile, VaccineVial, VaccineDispensing,
-    VaccineDispensingItem, StockDisposal,
+    VaccineDispensingItem, StockDisposal, StockMovement,
 )
 from .forms import (
     MedicineForm, SupplierForm, MedicineCodeForm, OrderHeaderForm,
@@ -26,6 +26,7 @@ from .forms import (
     InternalDispensingForm, UserForm, UserProfileForm, PasswordResetForm,
     VaccineDispensingForm, StockDisposalForm,
 )
+from .stock_history import record_stock_movement
 import json
 
 from django.views.decorators.csrf import csrf_exempt
@@ -754,6 +755,7 @@ def _validate_dispensing_items(request, prescription_snapshot=None):
     return parsed, errors
 
 
+@transaction.atomic
 def _apply_dispensing_items(request, prescription, parsed):
     """Apply items previously validated by _validate_dispensing_items().
 
@@ -786,6 +788,14 @@ def _apply_dispensing_items(request, prescription, parsed):
         Medicine.objects.filter(pk=medicine_id).update(
             current_stock=models.F('current_stock') - quantity
         )
+        record_stock_movement(
+            medicine,
+            'dispense',
+            -quantity,
+            movement_date=prescription.dispensing_date,
+            batch=batch,
+            reference=f'Prescription {prescription.prescription_ref}',
+        )
     return True
 
 
@@ -799,6 +809,7 @@ def _process_dispensing_items(request, prescription):
     return _apply_dispensing_items(request, prescription, parsed)
 
 
+@transaction.atomic
 def _restore_stock(prescription):
     """Restore stock when editing or deleting a prescription.
 
@@ -818,6 +829,14 @@ def _restore_stock(prescription):
         if item.medicine_id:
             Medicine.objects.filter(pk=item.medicine_id).update(
                 current_stock=models.F('current_stock') + qty
+            )
+            record_stock_movement(
+                item.medicine,
+                'correction',
+                qty,
+                movement_date=prescription.dispensing_date,
+                batch=item.batch,
+                reference=f'Prescription {prescription.prescription_ref} reversal',
             )
         item._skip_stock_signal = True
     return items
@@ -887,6 +906,14 @@ def _consume_vaccine_doses(batch, action, quantity, movement_date, user):
             Medicine.objects.filter(pk=medicine.pk).update(
                 current_stock=models.F('current_stock') - required_new_vials
             )
+            record_stock_movement(
+                medicine,
+                'vaccine_dispense' if action == 'dispensed' else 'vaccine_waste',
+                -required_new_vials,
+                movement_date=movement_date,
+                batch=batch,
+                reference=f'Vaccine movement: {action}',
+            )
             for _ in range(required_new_vials):
                 new_vial = VaccineVial.objects.create(
                     batch=batch,
@@ -944,6 +971,14 @@ def _consume_syringe_stock(size, quantity, movement_date, user):
         Medicine.objects.filter(pk=batch.medicine_id).update(
             current_stock=models.F('current_stock') - consumed
         )
+        record_stock_movement(
+            batch.medicine,
+            'vaccine_dispense',
+            -consumed,
+            movement_date=movement_date,
+            batch=batch,
+            reference=f'Vaccine dispensing used syringes ({size} ml)',
+        )
         allocation[str(batch.pk)] = allocation.get(str(batch.pk), 0) + consumed
         remaining -= consumed
         if not remaining:
@@ -953,6 +988,16 @@ def _consume_syringe_stock(size, quantity, movement_date, user):
 
 def _restore_vaccine_movement(movement):
     for item in movement.items.all():
+        record_stock_movement(
+            item.medicine,
+            'correction',
+            item.quantity_doses,
+            movement_date=movement.dispensing_date,
+            batch=item.batch,
+            reference=f'{movement} dose reversal',
+            quantity_unit='جرعة',
+            affects_stock_balance=False,
+        )
         for vial_id, quantity in item.vial_consumption.items():
             VaccineVial.objects.filter(pk=vial_id).update(
                 doses_remaining=models.F('doses_remaining') + quantity,
@@ -967,14 +1012,30 @@ def _restore_vaccine_movement(movement):
             Medicine.objects.filter(pk=item.medicine_id).update(
                 current_stock=models.F('current_stock') + item.vials_opened
             )
+            record_stock_movement(
+                item.medicine,
+                'correction',
+                item.vials_opened,
+                movement_date=movement.dispensing_date,
+                batch=item.batch,
+                reference='Vaccine movement reversal',
+            )
         for batch_id, quantity in item.syringe_consumption.items():
+            syringe_batch = Batch.objects.filter(pk=batch_id).select_related('medicine').first()
             Batch.objects.filter(pk=batch_id).update(
                 quantity_remaining=models.F('quantity_remaining') + quantity
             )
-            syringe_batch = Batch.objects.filter(pk=batch_id).values_list('medicine_id', flat=True).first()
             if syringe_batch:
-                Medicine.objects.filter(pk=syringe_batch).update(
+                Medicine.objects.filter(pk=syringe_batch.medicine_id).update(
                     current_stock=models.F('current_stock') + quantity
+                )
+                record_stock_movement(
+                    syringe_batch.medicine,
+                    'correction',
+                    quantity,
+                    movement_date=movement.dispensing_date,
+                    batch=syringe_batch,
+                    reference='Vaccine movement syringe reversal',
                 )
         item.delete()
 
@@ -1083,6 +1144,16 @@ def vaccine_dispensing_add(request):
                             created_by=request.user,
                             updated_by=request.user,
                         )
+                        record_stock_movement(
+                            batch.medicine,
+                            'vaccine_dose',
+                            -quantity,
+                            movement_date=movement.dispensing_date,
+                            batch=batch,
+                            reference=f'{movement} - {action}',
+                            quantity_unit='جرعة',
+                            affects_stock_balance=False,
+                        )
                 messages.success(request, 'تم حفظ حركة التطعيمات بنجاح')
                 return redirect('vaccine_dispensing_list')
             except (Batch.DoesNotExist, ValidationError) as exc:
@@ -1154,6 +1225,16 @@ def vaccine_dispensing_edit(request, pk):
                             syringe_consumption=syringe_consumption,
                             created_by=request.user, updated_by=request.user,
                         )
+                        record_stock_movement(
+                            batch.medicine,
+                            'vaccine_dose',
+                            -quantity,
+                            movement_date=movement.dispensing_date,
+                            batch=batch,
+                            reference=f'{movement} - {action}',
+                            quantity_unit='جرعة',
+                            affects_stock_balance=False,
+                        )
                 messages.success(request, 'تم تحديث حركة التطعيمات بنجاح')
                 return redirect('vaccine_dispensing_list')
             except (Batch.DoesNotExist, ValidationError) as exc:
@@ -1219,6 +1300,14 @@ def stock_disposal_add(request):
                     disposal.created_by = request.user
                     disposal.updated_by = request.user
                     disposal.save()
+                    record_stock_movement(
+                        disposal.medicine,
+                        'disposal',
+                        -disposal.quantity,
+                        movement_date=disposal.dispensing_date,
+                        batch=batch,
+                        reference=f'Stock disposal #{disposal.pk}',
+                    )
                 messages.success(request, 'تم تسجيل إعدام المخزون بنجاح')
                 return redirect('stock_disposal_list')
             except (Batch.DoesNotExist, ValidationError) as exc:
@@ -1274,6 +1363,7 @@ def _parse_internal_dispensing_items(request):
     return parsed, errors
 
 
+@transaction.atomic
 def _restore_internal_dispensing_stock(dispensing):
     for item in dispensing.items.select_related('destination_batch').all():
         quantity = item.quantity_dispensed or 0
@@ -1285,6 +1375,14 @@ def _restore_internal_dispensing_stock(dispensing):
         Medicine.objects.filter(pk=item.medicine_id).update(
             current_stock=models.F('current_stock') + quantity
         )
+        record_stock_movement(
+            item.medicine,
+            'correction',
+            quantity,
+            movement_date=dispensing.dispensing_date,
+            batch=item.batch,
+            reference=f'Internal dispensing {dispensing.dispensing_ref} reversal',
+        )
         if destination_batch and destination_medicine_id:
             Batch.objects.filter(pk=destination_batch.pk).update(
                 quantity_received=models.F('quantity_received') - quantity,
@@ -1292,6 +1390,14 @@ def _restore_internal_dispensing_stock(dispensing):
             )
             Medicine.objects.filter(pk=destination_medicine_id).update(
                 current_stock=models.F('current_stock') - quantity
+            )
+            record_stock_movement(
+                item.destination_medicine,
+                'correction',
+                -quantity,
+                movement_date=dispensing.dispensing_date,
+                batch=destination_batch,
+                reference=f'Internal dispensing {dispensing.dispensing_ref} reversal',
             )
         item._skip_stock_signal = True
         item.delete()
@@ -1301,6 +1407,7 @@ def _restore_internal_dispensing_stock(dispensing):
                 destination_batch.delete()
 
 
+@transaction.atomic
 def _apply_internal_dispensing_items(request, dispensing, parsed):
     source_batch_totals = {}
     medicine_ids = set()
@@ -1367,6 +1474,22 @@ def _apply_internal_dispensing_items(request, dispensing, parsed):
             Medicine.objects.filter(pk=destination_medicine_id).update(
                 current_stock=models.F('current_stock') + quantity
             )
+            record_stock_movement(
+                medicines[destination_medicine_id],
+                'internal_in',
+                quantity,
+                movement_date=dispensing.dispensing_date,
+                batch=destination_batch,
+                reference=f'Internal dispensing {dispensing.dispensing_ref}',
+            )
+        record_stock_movement(
+            medicines[medicine_id],
+            'internal_out',
+            -quantity,
+            movement_date=dispensing.dispensing_date,
+            batch=source_batch,
+            reference=f'Internal dispensing {dispensing.dispensing_ref}',
+        )
         InternalDispensingItem.objects.create(
             dispensing=dispensing,
             medicine=medicines[medicine_id],
@@ -1570,6 +1693,7 @@ def order_edit(request, pk):
     })
 
 
+@transaction.atomic
 def _save_order_items(order, formset):
     """Persist order line items and create batches/stock updates when present."""
     saved_items = 0
@@ -1645,6 +1769,7 @@ def order_print(request, pk):
     })
 
 
+@transaction.atomic
 def _restore_order_stock(order, was_delivered=True):
     """Reverse batch & medicine stock updates created by an order's received items."""
     if not was_delivered:
@@ -1658,25 +1783,35 @@ def _restore_order_stock(order, was_delivered=True):
             current_stock=models.F('current_stock') - qty
         )
 
-        if item.batch_number:
-            batch = Batch.objects.filter(
-                medicine_id=item.medicine_id,
-                batch_number=item.batch_number,
-            ).first()
-            if batch:
-                new_remaining = batch.quantity_remaining - qty
-                new_received = batch.quantity_received - qty
-                if new_remaining <= 0 and new_received <= 0:
-                    batch._skip_stock_signal = True
-                    batch.delete()
-                else:
-                    Batch.objects.filter(pk=batch.pk).update(
-                        quantity_remaining=max(0, new_remaining),
-                        quantity_received=max(0, new_received),
-                    )
+        batch = Batch.objects.filter(
+            medicine_id=item.medicine_id,
+            batch_number=item.batch_number or 'N/A',
+        ).first()
+        record_stock_movement(
+            item.medicine,
+            'correction',
+            -qty,
+            movement_date=order.effective_receive_date,
+            batch=batch,
+            batch_number=item.batch_number,
+            reference=f'Purchase order {order.po_number} reversal',
+            po_number=order.po_number,
+        )
+        if batch:
+            new_remaining = batch.quantity_remaining - qty
+            new_received = batch.quantity_received - qty
+            if new_remaining <= 0 and new_received <= 0:
+                batch._skip_stock_signal = True
+                batch.delete()
+            else:
+                Batch.objects.filter(pk=batch.pk).update(
+                    quantity_remaining=max(0, new_remaining),
+                    quantity_received=max(0, new_received),
+                )
         Medicine.objects.get(pk=item.medicine_id).recompute_current_stock()
 
 
+@transaction.atomic
 def _create_batch_and_update_stock(item, order):
     """Helper function to create batch record and update stock.
 
@@ -1691,21 +1826,21 @@ def _create_batch_and_update_stock(item, order):
         order.receive_date or order.order_date or timezone.now().date()
     )
 
-    batch_id = None
+    batch = None
     if item.batch_number:
         existing = Batch.objects.filter(
             batch_number=item.batch_number,
             medicine=item.medicine,
         ).first()
         if existing:
-            batch_id = existing.pk
+            batch = existing
             Batch.objects.filter(pk=existing.pk).update(
                 quantity_received=models.F('quantity_received') + item.quantity_received,
                 quantity_remaining=models.F('quantity_remaining') + item.quantity_received,
                 date_received=received_on,  # Always (re)set to match order
             )
 
-    if batch_id is None:
+    if batch is None:
         batch = Batch(
             medicine=item.medicine,
             batch_number=item.batch_number or 'N/A',
@@ -1722,9 +1857,87 @@ def _create_batch_and_update_stock(item, order):
     Medicine.objects.filter(pk=item.medicine.pk).update(
         current_stock=models.F('current_stock') + item.quantity_received
     )
+    record_stock_movement(
+        item.medicine,
+        'receipt',
+        item.quantity_received,
+        movement_date=received_on,
+        batch=batch,
+        batch_number=item.batch_number or 'N/A',
+        reference=f'Purchase order {order.po_number}',
+        po_number=order.po_number,
+    )
 
 
 # ─── REPORTS ─────────────────────────────────────────────────
+
+
+@login_required_custom
+def medicine_history(request):
+    search = request.GET.get('search', '').strip()
+    medicine_options = Medicine.objects.all().order_by('name', 'id')
+    if search:
+        medicine_options = medicine_options.filter(
+            Q(name__icontains=search) |
+            Q(book_reference__icontains=search) |
+            Q(codes__code__icontains=search)
+        ).distinct()
+
+    selected_medicine = None
+    selected_id = request.GET.get('medicine', '')
+    if selected_id.isdigit():
+        selected_medicine = get_object_or_404(Medicine, pk=int(selected_id))
+        if not medicine_options.filter(pk=selected_medicine.pk).exists():
+            medicine_options = list(medicine_options)
+            medicine_options.insert(0, selected_medicine)
+
+    start_value = request.GET.get('from', '')
+    end_value = request.GET.get('to', '')
+    try:
+        start_date = date.fromisoformat(start_value) if start_value else None
+    except ValueError:
+        start_date = None
+    try:
+        end_date = date.fromisoformat(end_value) if end_value else None
+    except ValueError:
+        end_date = None
+
+    history_rows = []
+    current_balance = None
+    if selected_medicine:
+        movements = list(StockMovement.objects.filter(
+            medicine=selected_medicine
+        ).select_related('batch').order_by('movement_date', 'id'))
+        opening_balance = selected_medicine.current_stock - sum(
+            movement.quantity_delta for movement in movements
+            if movement.affects_stock_balance
+        )
+        current_balance = opening_balance
+        for movement in movements:
+            if movement.affects_stock_balance:
+                current_balance += movement.quantity_delta
+            if start_date and movement.movement_date < start_date:
+                continue
+            if end_date and movement.movement_date > end_date:
+                continue
+            history_rows.append({
+                'movement': movement,
+                'balance_after': current_balance,
+            })
+
+    page_obj = paginate_queryset(request, history_rows, per_page=50)
+    query_params = request.GET.copy()
+    query_params.pop('page', None)
+    return render(request, 'reports/medicine_history.html', {
+        'search': search,
+        'medicine_options': medicine_options,
+        'selected_medicine': selected_medicine,
+        'start_date': start_value,
+        'end_date': end_value,
+        'page_obj': page_obj,
+        'query_string': query_params.urlencode(),
+        'current_balance': current_balance,
+    })
 
 
 def _report_date(value, fallback):
