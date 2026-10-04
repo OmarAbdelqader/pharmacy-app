@@ -46,6 +46,11 @@
                     <th>نوع الصنف</th>
                     <th>اسم الصنف</th>
                     <th>منصرف</th>
+                    {% if show_vaccine_actions %}
+                    <th>هادر</th>
+                    <th>إعدام</th>
+                    {% endif %}
+                    <th>الوحدة</th>
                 </tr>
             </thead>
             <tbody>
@@ -54,6 +59,11 @@
                     <td>{{ row.medicine.category|default:'—' }}</td>
                     <td><strong>{{ row.medicine.name }}</strong></td>
                     <td>{{ row.dispensed }}</td>
+                    {% if show_vaccine_actions %}
+                    <td>{{ row.wasted }}</td>
+                    <td>{{ row.disposed }}</td>
+                    {% endif %}
+                    <td>{{ row.unit|default:'—' }}</td>
                 </tr>
                 {% endfor %}
             </tbody>

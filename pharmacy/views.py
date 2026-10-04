@@ -2206,6 +2206,46 @@ def report_44(request):
         medicines = medicines.filter(category__icontains=category_filter)
 
     categories = Medicine.objects.values_list('category', flat=True).distinct().order_by('category')
+    show_vaccine_actions = medicines.filter(is_vaccine=True).exists()
+    vaccine_medicine_ids = list(
+        medicines.filter(is_vaccine=True).values_list('id', flat=True)
+    )
+
+    vaccine_syringe_items = VaccineDispensingItem.objects.filter(
+        medicine_id__in=vaccine_medicine_ids,
+        action='dispensed',
+    )
+    if start_date:
+        vaccine_syringe_items = vaccine_syringe_items.filter(
+            dispensing__dispensing_date__gte=start_date,
+        )
+    vaccine_syringe_items = vaccine_syringe_items.filter(
+        dispensing__dispensing_date__lte=end_date,
+    )
+    syringe_batch_totals = {}
+    for allocation in vaccine_syringe_items.values_list('syringe_consumption', flat=True):
+        if not isinstance(allocation, dict):
+            continue
+        for batch_id, quantity in allocation.items():
+            syringe_batch_totals[int(batch_id)] = (
+                syringe_batch_totals.get(int(batch_id), 0) + int(quantity)
+            )
+    syringe_batch_medicines = Batch.objects.filter(
+        pk__in=syringe_batch_totals,
+        medicine__product_type='syringe',
+    ).values_list('pk', 'medicine_id')
+    vaccine_syringe_totals = {}
+    for batch_id, medicine_id in syringe_batch_medicines:
+        vaccine_syringe_totals[medicine_id] = (
+            vaccine_syringe_totals.get(medicine_id, 0)
+            + syringe_batch_totals[batch_id]
+        )
+    syringe_ids = list(vaccine_syringe_totals)
+    if syringe_ids:
+        medicines = Medicine.objects.filter(
+            Q(pk__in=medicines.values('pk')) | Q(pk__in=syringe_ids)
+        ).order_by('category', 'id')
+
     medicine_ids = list(medicines.values_list('id', flat=True))
 
     def _dispensing_totals(start=None, end=None, end_exclusive=False):
@@ -2236,31 +2276,68 @@ def report_44(request):
             )
         }
 
+    def _vaccine_action_totals(action, start=None, end=None, end_exclusive=False):
+        queryset = VaccineDispensingItem.objects.filter(
+            medicine_id__in=medicine_ids,
+            action=action,
+        )
+        if start is not None:
+            queryset = queryset.filter(dispensing__dispensing_date__gte=start)
+        if end is not None:
+            lookup = 'dispensing__dispensing_date__lt' if end_exclusive else 'dispensing__dispensing_date__lte'
+            queryset = queryset.filter(**{lookup: end})
+        return {
+            row['medicine_id']: row['total'] or 0
+            for row in queryset.values('medicine_id').annotate(
+                total=Sum('quantity_doses')
+            )
+        }
+
     if start_date:
         dispensed_in_range = _dispensing_totals(start=start_date, end=end_date)
         internal_dispensed_in_range = _internal_dispensed_totals(start=start_date, end=end_date)
+        vaccine_dispensed_in_range = {
+            action: _vaccine_action_totals(action, start=start_date, end=end_date)
+            for action in ('dispensed', 'waste', 'disposal')
+        }
     else:
         dispensed_in_range = _dispensing_totals(end=end_date)
         internal_dispensed_in_range = _internal_dispensed_totals(end=end_date)
+        vaccine_dispensed_in_range = {
+            action: _vaccine_action_totals(action, end=end_date)
+            for action in ('dispensed', 'waste', 'disposal')
+        }
 
     rows = []
 
     for medicine in medicines:
-        dispensed = dispensed_in_range.get(medicine.id, 0) + internal_dispensed_in_range.get(medicine.id, 0)
+        vaccine_dispensed = vaccine_dispensed_in_range['dispensed'].get(medicine.id, 0)
+        vaccine_wasted = vaccine_dispensed_in_range['waste'].get(medicine.id, 0)
+        vaccine_disposed = vaccine_dispensed_in_range['disposal'].get(medicine.id, 0)
+        dispensed = (
+            dispensed_in_range.get(medicine.id, 0)
+            + internal_dispensed_in_range.get(medicine.id, 0)
+            + vaccine_dispensed
+            + vaccine_syringe_totals.get(medicine.id, 0)
+        )
         medicine.dispensed = dispensed
 
-        if dispensed == 0:
+        if dispensed == 0 and vaccine_wasted == 0 and vaccine_disposed == 0:
             continue
 
         rows.append({
             'medicine': medicine,
             'dispensed': dispensed,
+            'wasted': vaccine_wasted,
+            'disposed': vaccine_disposed,
+            'unit': 'جرعة' if medicine.is_vaccine else medicine.unit,
         })
 
     context = {
         'rows': rows,
         'categories': categories,
         'category_filter': category_filter,
+        'show_vaccine_actions': show_vaccine_actions,
         'start_date': start_date,
         'end_date': end_date,
     }

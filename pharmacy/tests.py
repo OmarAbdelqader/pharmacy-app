@@ -503,6 +503,183 @@ class StockMovementReportTests(TestCase):
         self.assertNotIn(inactive_medicine, [row['medicine'] for row in rows])
 
 
+class Report44Tests(TestCase):
+    def test_report_shows_vaccine_dispensed_waste_and_disposal_separately(self):
+        user = User.objects.create_user(username='report44-user', password='testpass')
+        vaccine = Medicine.objects.create(
+            name='Report vaccine',
+            category='Vaccines',
+            is_vaccine=True,
+        )
+        batch = Batch.objects.create(
+            medicine=vaccine,
+            batch_number='REPORT-44',
+            expiry_date=date(2030, 12, 31),
+            quantity_received=2,
+            quantity_remaining=2,
+        )
+        syringe = Medicine.objects.create(
+            name='Report 44 half-ml syringe',
+            category='Syringes',
+            product_type='syringe',
+            syringe_size='0.5',
+            unit='سرنجة',
+        )
+        syringe_batch = Batch.objects.create(
+            medicine=syringe,
+            batch_number='REPORT-44-SYRINGE',
+            expiry_date=date(2030, 12, 31),
+            quantity_received=10,
+            quantity_remaining=3,
+        )
+        three_ml_syringe = Medicine.objects.create(
+            name='Report 44 three-ml syringe',
+            category='Syringes',
+            product_type='syringe',
+            syringe_size='3.0',
+            unit='سرنجة',
+        )
+        three_ml_syringe_batch = Batch.objects.create(
+            medicine=three_ml_syringe,
+            batch_number='REPORT-44-SYRINGE-3ML',
+            expiry_date=date(2030, 12, 31),
+            quantity_received=5,
+            quantity_remaining=4,
+        )
+        dispensing = VaccineDispensing.objects.create(
+            dispensing_date=date(2026, 9, 6),
+        )
+        VaccineDispensingItem.objects.create(
+            dispensing=dispensing,
+            medicine=vaccine,
+            batch=batch,
+            action='dispensed',
+            quantity_doses=7,
+            syringe_half_ml_used=7,
+            syringe_three_ml_used=1,
+            syringe_consumption={
+                str(syringe_batch.pk): 7,
+                str(three_ml_syringe_batch.pk): 1,
+            },
+        )
+        VaccineDispensingItem.objects.create(
+            dispensing=dispensing,
+            medicine=vaccine,
+            batch=batch,
+            action='waste',
+            quantity_doses=2,
+        )
+        VaccineDispensingItem.objects.create(
+            dispensing=dispensing,
+            medicine=vaccine,
+            batch=batch,
+            action='disposal',
+            quantity_doses=3,
+        )
+
+        self.client.force_login(user)
+        response = self.client.get(reverse('report_44'), {
+            'from': '2026-09-01',
+            'to': '2026-09-30',
+            'category': 'Vaccines',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context['rows']), 3)
+        vaccine_row = next(
+            row for row in response.context['rows']
+            if row['medicine'] == vaccine
+        )
+        self.assertEqual(vaccine_row['dispensed'], 7)
+        self.assertEqual(vaccine_row['wasted'], 2)
+        self.assertEqual(vaccine_row['disposed'], 3)
+        self.assertEqual(vaccine_row['unit'], 'جرعة')
+        syringe_row = next(
+            row for row in response.context['rows']
+            if row['medicine'] == syringe
+        )
+        self.assertEqual(syringe_row['dispensed'], 7)
+        self.assertEqual(syringe_row['unit'], 'سرنجة')
+        three_ml_row = next(
+            row for row in response.context['rows']
+            if row['medicine'] == three_ml_syringe
+        )
+        self.assertEqual(three_ml_row['dispensed'], 1)
+        self.assertTrue(response.context['show_vaccine_actions'])
+        self.assertContains(response, 'جرعة')
+        self.assertContains(response, 'هادر')
+        self.assertContains(response, 'إعدام')
+
+    def test_report_shows_vaccine_waste_without_dispensed_doses(self):
+        user = User.objects.create_user(username='report44-waste-user', password='testpass')
+        vaccine = Medicine.objects.create(name='Waste-only vaccine', is_vaccine=True)
+        batch = Batch.objects.create(
+            medicine=vaccine,
+            batch_number='REPORT-44-WASTE',
+            expiry_date=date(2030, 12, 31),
+            quantity_received=1,
+            quantity_remaining=1,
+        )
+        dispensing = VaccineDispensing.objects.create(
+            dispensing_date=date(2026, 9, 6),
+        )
+        VaccineDispensingItem.objects.create(
+            dispensing=dispensing,
+            medicine=vaccine,
+            batch=batch,
+            action='waste',
+            quantity_doses=4,
+        )
+
+        self.client.force_login(user)
+        response = self.client.get(reverse('report_44'), {
+            'from': '2026-09-01',
+            'to': '2026-09-30',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context['rows']), 1)
+        self.assertEqual(response.context['rows'][0]['dispensed'], 0)
+        self.assertEqual(response.context['rows'][0]['wasted'], 4)
+        self.assertEqual(response.context['rows'][0]['disposed'], 0)
+
+    def test_report_hides_waste_and_disposal_columns_for_non_vaccine_filter(self):
+        user = User.objects.create_user(username='report44-medicine-user', password='testpass')
+        medicine = Medicine.objects.create(
+            name='Regular report medicine',
+            category='Medicines',
+        )
+        prescription = Prescription.objects.create(
+            prescription_ref='R44TEST',
+            dispensing_date=date(2026, 9, 6),
+        )
+        batch = Batch.objects.create(
+            medicine=medicine,
+            batch_number='REPORT-44-MEDICINE',
+            expiry_date=date(2030, 12, 31),
+            quantity_received=5,
+            quantity_remaining=2,
+        )
+        DispensingItem.objects.create(
+            prescription=prescription,
+            medicine=medicine,
+            batch=batch,
+            quantity_dispensed=3,
+        )
+
+        self.client.force_login(user)
+        response = self.client.get(reverse('report_44'), {
+            'from': '2026-09-01',
+            'to': '2026-09-30',
+            'category': 'Medicines',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context['show_vaccine_actions'])
+        self.assertNotContains(response, '<th>هادر</th>', html=True)
+        self.assertNotContains(response, '<th>إعدام</th>', html=True)
+
+
 class VaccineDispensingTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='vaccine-user', password='testpass')
