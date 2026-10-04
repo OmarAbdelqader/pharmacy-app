@@ -1,3 +1,5 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from django import forms
 from django.contrib.auth.models import User
 from django.forms.widgets import DateInput as _DateInput
@@ -28,7 +30,8 @@ class MedicineForm(forms.ModelForm):
     class Meta:
         model = Medicine
         fields = [
-            'name', 'category', 'book_reference', 'unit', 'reorder_level',
+            'name', 'category', 'book_reference', 'unit',
+            'last_purchase_unit_price', 'reorder_level',
             'default_dispense_qty', 'product_type', 'syringe_size',
             'vaccine_type', 'doses_per_vial', 'opened_vial_validity_days',
             'requires_three_ml_syringe', 'description'
@@ -50,6 +53,12 @@ class MedicineForm(forms.ModelForm):
             'unit': forms.TextInput(attrs={
                 'class': 'form-control',
                 'placeholder': 'مثال: حبة، علبة، زجاجة'
+            }),
+            'last_purchase_unit_price': forms.NumberInput(attrs={
+                'class': 'form-control',
+                'placeholder': '0.0000',
+                'step': '0.0001',
+                'min': '0'
             }),
             'reorder_level': forms.NumberInput(attrs={
                 'class': 'form-control',
@@ -82,6 +91,7 @@ class MedicineForm(forms.ModelForm):
             'category': 'نوع الصنف',
             'book_reference': 'دفتر 118',
             'unit': 'الوحدة',
+            'last_purchase_unit_price': 'سعر الوحدة الافتراضي',
             'reorder_level': 'المتوسط',
             'default_dispense_qty': 'الكمية الافتراضية للصرف',
             'product_type': 'نوع المنتج',
@@ -223,6 +233,7 @@ class OrderHeaderForm(forms.ModelForm):
 
 
 class OrderItemForm(forms.ModelForm):
+    price_edit_source = forms.CharField(required=False, widget=forms.HiddenInput())
     expiry_date = forms.DateField(
         required=False,
         widget=_MonthDateInput(attrs={
@@ -235,7 +246,7 @@ class OrderItemForm(forms.ModelForm):
         model = OrderItem
         fields = [
             'medicine', 'quantity_ordered', 'quantity_received',
-            'unit_cost', 'batch_number', 'expiry_date'
+            'unit_cost', 'total_cost', 'batch_number', 'expiry_date'
         ]
         widgets = {
             'medicine': forms.Select(attrs={
@@ -254,7 +265,12 @@ class OrderItemForm(forms.ModelForm):
             'unit_cost': forms.NumberInput(attrs={
                 'class': 'form-control',
                 'placeholder': '0.00',
-                'step': '0.01'
+                'step': '0.0001'
+            }),
+            'total_cost': forms.NumberInput(attrs={
+                'class': 'form-control total-cost',
+                'placeholder': '0.0000',
+                'step': '0.0001'
             }),
             'batch_number': forms.TextInput(attrs={
                 'class': 'form-control',
@@ -266,6 +282,7 @@ class OrderItemForm(forms.ModelForm):
             'quantity_ordered': 'الكمية المطلوبة',
             'quantity_received': 'الكمية المستلمة',
             'unit_cost': 'سعر الوحدة',
+            'total_cost': 'إجمالي القيمة',
             'batch_number': 'رقم التشغيلة',
             'expiry_date': 'تاريخ الانتهاء',
         }
@@ -277,6 +294,7 @@ class OrderItemForm(forms.ModelForm):
         self.fields['quantity_received'].required = False
         self.fields['quantity_received'].empty_value = 0
         self.fields['unit_cost'].required = False
+        self.fields['total_cost'].required = False
         self.fields['batch_number'].required = False
 
     def clean_quantity_ordered(self):
@@ -290,6 +308,30 @@ class OrderItemForm(forms.ModelForm):
     def clean_unit_cost(self):
         v = self.cleaned_data.get('unit_cost')
         return None if v in (None, '') else v
+
+    def clean(self):
+        cleaned_data = super().clean()
+        quantity_received = cleaned_data.get('quantity_received') or 0
+        unit_cost = cleaned_data.get('unit_cost')
+        total_cost = cleaned_data.get('total_cost')
+        source = cleaned_data.get('price_edit_source')
+
+        if quantity_received == 0:
+            cleaned_data['total_cost'] = Decimal('0.0000')
+        elif source == 'total' and total_cost is not None:
+            cleaned_data['unit_cost'] = (total_cost / quantity_received).quantize(
+                Decimal('0.0001'), rounding=ROUND_HALF_UP
+            )
+        elif unit_cost is not None:
+            cleaned_data['total_cost'] = (unit_cost * quantity_received).quantize(
+                Decimal('0.0001'), rounding=ROUND_HALF_UP
+            )
+        elif total_cost is not None:
+            cleaned_data['unit_cost'] = (total_cost / quantity_received).quantize(
+                Decimal('0.0001'), rounding=ROUND_HALF_UP
+            )
+
+        return cleaned_data
 
     def clean_batch_number(self):
         v = self.cleaned_data.get('batch_number')

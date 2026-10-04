@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.forms import formset_factory
@@ -38,6 +39,110 @@ class OrderItemSaveTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'for="id_items-0-DELETE"')
         self.assertContains(response, 'name="items-0-DELETE"')
+        self.assertContains(response, 'الوحدة')
+        self.assertContains(response, 'إجمالي القيمة')
+        self.assertContains(response, 'is-unreceived')
+
+    def test_order_form_uses_medicine_default_price_and_unit_api(self):
+        self.medicine.unit = 'علبة'
+        self.medicine.last_purchase_unit_price = '1.2345'
+        self.medicine.save()
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse('medicine_api', args=[self.medicine.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['unit'], 'علبة')
+        self.assertEqual(response.json()['last_purchase_unit_price'], '1.2345')
+
+    def test_medicine_edit_allows_manual_unit_price_change(self):
+        self.client.force_login(self.user)
+        response = self.client.get(reverse('medicine_edit', args=[self.medicine.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'سعر الوحدة الافتراضي')
+        self.assertContains(response, 'step="0.0001"')
+
+        response = self.client.post(reverse('medicine_edit', args=[self.medicine.pk]), {
+            'name': self.medicine.name,
+            'category': '',
+            'book_reference': '',
+            'unit': 'علبة',
+            'last_purchase_unit_price': '1.2345',
+            'reorder_level': '0',
+            'default_dispense_qty': '',
+            'product_type': 'medicine',
+            'syringe_size': '',
+            'vaccine_type': '',
+            'doses_per_vial': '',
+            'opened_vial_validity_days': '',
+            'description': '',
+        })
+
+        self.assertRedirects(response, reverse('medicine_list'))
+        self.medicine.refresh_from_db()
+        self.assertEqual(self.medicine.last_purchase_unit_price, Decimal('1.2345'))
+
+    def test_order_item_calculates_total_and_remembers_unit_price(self):
+        formset_class = formset_factory(OrderItemForm, extra=0)
+        formset = formset_class(data={
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-0-medicine': str(self.medicine.pk),
+            'items-0-quantity_ordered': '10',
+            'items-0-quantity_received': '3',
+            'items-0-unit_cost': '1.2345',
+            'items-0-total_cost': '3.7035',
+            'items-0-price_edit_source': 'unit',
+        }, prefix='items')
+
+        self.assertTrue(formset.is_valid(), formset.errors)
+        _save_order_items(self.order, formset)
+
+        item = self.order.items.get()
+        self.assertEqual(item.total_cost, Decimal('3.7035'))
+        self.medicine.refresh_from_db()
+        self.assertEqual(self.medicine.last_purchase_unit_price, Decimal('1.2345'))
+
+    def test_order_item_total_edit_updates_unit_price(self):
+        formset_class = formset_factory(OrderItemForm, extra=0)
+        formset = formset_class(data={
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-0-medicine': str(self.medicine.pk),
+            'items-0-quantity_ordered': '10',
+            'items-0-quantity_received': '4',
+            'items-0-unit_cost': '1.0000',
+            'items-0-total_cost': '7.0000',
+            'items-0-price_edit_source': 'total',
+        }, prefix='items')
+
+        self.assertTrue(formset.is_valid(), formset.errors)
+        _save_order_items(self.order, formset)
+
+        item = self.order.items.get()
+        self.assertEqual(item.unit_cost, Decimal('1.7500'))
+        self.assertEqual(item.total_cost, Decimal('7.0000'))
+
+    def test_zero_received_item_has_zero_total(self):
+        formset_class = formset_factory(OrderItemForm, extra=0)
+        formset = formset_class(data={
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-0-medicine': str(self.medicine.pk),
+            'items-0-quantity_ordered': '10',
+            'items-0-quantity_received': '0',
+            'items-0-unit_cost': '1.2345',
+            'items-0-total_cost': '9.0000',
+            'items-0-price_edit_source': 'total',
+        }, prefix='items')
+
+        self.assertTrue(formset.is_valid(), formset.errors)
+        _save_order_items(self.order, formset)
+
+        item = self.order.items.get()
+        self.assertEqual(item.total_cost, Decimal('0.0000'))
+        self.assertEqual(item.unit_cost, Decimal('1.2345'))
 
     def test_save_order_items_creates_items_and_batches(self):
         formset_class = formset_factory(OrderItemForm, extra=0)

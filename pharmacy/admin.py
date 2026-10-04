@@ -12,7 +12,11 @@ from .stock_history import record_stock_movement
 
 @admin.register(Medicine)
 class MedicineAdmin(admin.ModelAdmin):
-    list_display = ['name', 'category', 'unit', 'current_stock', 'reorder_level', 'is_low_stock']
+    list_display = [
+        'name', 'category', 'unit', 'last_purchase_unit_price',
+        'current_stock', 'reorder_level', 'is_low_stock'
+    ]
+    readonly_fields = ['last_purchase_unit_price']
     search_fields = ['name', 'category', 'book_reference']
     list_filter = ['category']
 

@@ -62,6 +62,10 @@ class Medicine(TimeStampedModel):
     category = models.CharField(max_length=100, blank=True)
     book_reference = models.CharField(max_length=50, blank=True)
     unit = models.CharField(max_length=50, blank=True)
+    last_purchase_unit_price = models.DecimalField(
+        max_digits=12, decimal_places=4, null=True, blank=True,
+        verbose_name='آخر سعر شراء للوحدة'
+    )
     current_stock = models.IntegerField(default=0)
     reorder_level = models.IntegerField(default=0)
     default_dispense_qty = models.IntegerField(null=True, blank=True)
@@ -319,11 +323,11 @@ class OrderItem(TimeStampedModel):
     quantity_ordered = models.IntegerField(default=0, blank=True)
     quantity_received = models.IntegerField(default=0, blank=True)
     unit_cost = models.DecimalField(
-        max_digits=10, decimal_places=2,
+        max_digits=12, decimal_places=4,
         null=True, blank=True
     )
     total_cost = models.DecimalField(
-        max_digits=10, decimal_places=2,
+        max_digits=12, decimal_places=4,
         null=True, blank=True
     )
     batch_number = models.CharField(max_length=100, blank=True)
@@ -347,7 +351,9 @@ class OrderItem(TimeStampedModel):
             self.quantity_ordered = 0
         if self.quantity_received is None:
             self.quantity_received = 0
-        if self.quantity_received and self.unit_cost:
+        if self.quantity_received == 0:
+            self.total_cost = 0
+        elif self.total_cost is None and self.unit_cost is not None:
             self.total_cost = self.quantity_received * self.unit_cost
         super().save(*args, **kwargs)
 

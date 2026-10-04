@@ -13,13 +13,36 @@
     }
     .formset-row {
         background: #f8f9fa;
-        border-radius: 10px;
-        padding: 15px;
+        border-radius: 6px;
+        padding: 10px;
         margin-bottom: 10px;
         border: 1px solid #dee2e6;
+        min-width: 1250px;
     }
     .formset-row:hover {
         border-color: #0d6efd;
+    }
+    .formset-row.is-unreceived {
+        opacity: 0.55;
+        background: #eef0f2;
+    }
+    .po-row-grid {
+        display: grid;
+        grid-template-columns: minmax(180px, 2fr) minmax(110px, 1.2fr) 75px 85px 85px 85px 105px 115px minmax(125px, 1.2fr) minmax(125px, 1.2fr) 45px;
+        gap: 8px;
+        align-items: end;
+    }
+    .po-items-scroll {
+        overflow-x: auto;
+    }
+    .dosage-form-display {
+        min-height: 38px;
+        display: flex;
+        align-items: center;
+        padding: 6px 10px;
+        background: #e9ecef;
+        border: 1px solid #ced4da;
+        border-radius: 6px;
     }
     .delete-row {
         cursor: pointer;
@@ -140,43 +163,52 @@
         </div>
         {% endif %}
 
+        <div class="po-items-scroll">
         <div id="formset-container">
             {% for item_form in formset %}
-            <div class="formset-row">
-                <div class="row g-2 align-items-end">
-                    <div class="col-md-3">
+            <div class="formset-row{% if not item_form.quantity_received.value or item_form.quantity_received.value == '0' %} is-unreceived{% endif %}">
+                <div class="po-row-grid">
+                    <div>
                         <label class="form-label small">{{ item_form.medicine.label }}</label>
                         {{ item_form.medicine }}
                     </div>
-                    <div class="col-md-1">
+                    <div>
+                        <label class="form-label small">الوحدة</label>
+                        <div class="dosage-form-display" aria-readonly="true"></div>
+                    </div>
+                    <div>
                         <label class="form-label small">المتوسط</label>
                         <input type="text" class="form-control reorder-level" disabled>
                     </div>
-                    <div class="col-md-1">
+                    <div>
                         <label class="form-label small">الرصيد الحالي</label>
                         <input type="text" class="form-control current-stock" disabled>
                     </div>
-                    <div class="col-md-1">
+                    <div>
                         <label class="form-label small">{{ item_form.quantity_ordered.label }}</label>
                         {{ item_form.quantity_ordered }}
                     </div>
-                    <div class="col-md-1">
+                    <div>
                         <label class="form-label small">{{ item_form.quantity_received.label }}</label>
                         {{ item_form.quantity_received }}
                     </div>
-                    <div class="col-md-1">
+                    <div>
                         <label class="form-label small">{{ item_form.unit_cost.label }}</label>
                         {{ item_form.unit_cost }}
                     </div>
-                    <div class="col-md-2">
+                    <div>
+                        <label class="form-label small">{{ item_form.total_cost.label }}</label>
+                        {{ item_form.total_cost }}
+                    </div>
+                    <div>
                         <label class="form-label small">{{ item_form.batch_number.label }}</label>
                         {{ item_form.batch_number }}
                     </div>
-                    <div class="col-md-1">
+                    <div>
                         <label class="form-label small">{{ item_form.expiry_date.label }}</label>
                         {{ item_form.expiry_date }}
                     </div>
-                    <div class="col-md-1 text-center">
+                    <div class="text-center">
                         <label class="form-label small d-block" for="{{ item_form.DELETE.id_for_label }}">حذف</label>
                         {{ item_form.DELETE }}
                     </div>
@@ -184,6 +216,7 @@
                 {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
             </div>
             {% endfor %}
+        </div>
         </div>
 
         <div class="mt-2">
@@ -208,12 +241,49 @@
 
 {% block extra_js %}
 <script>
-    // Fetch medicine data when medicine is selected
-    function fillMedicineDetails(row) {
+    function updateReceivedState(row) {
+        const receivedInput = row.querySelector('input[name$="-quantity_received"]');
+        const totalInput = row.querySelector('input[name$="-total_cost"]');
+        const received = Number(receivedInput?.value || 0);
+        row.classList.toggle('is-unreceived', !receivedInput?.value || received <= 0);
+        if (totalInput) totalInput.readOnly = received <= 0;
+    }
+
+    function synchronizeCosts(row, source) {
+        const receivedInput = row.querySelector('input[name$="-quantity_received"]');
+        const unitInput = row.querySelector('input[name$="-unit_cost"]');
+        const totalInput = row.querySelector('input[name$="-total_cost"]');
+        const sourceInput = row.querySelector('input[name$="-price_edit_source"]');
+        const quantity = Number(receivedInput?.value || 0);
+        if (!unitInput || !totalInput) return;
+
+        if (quantity <= 0) {
+            totalInput.value = '0.0000';
+            totalInput.readOnly = true;
+            if (sourceInput) sourceInput.value = 'unit';
+            updateReceivedState(row);
+            return;
+        }
+
+        totalInput.readOnly = false;
+        if (source === 'total' && totalInput.value !== '') {
+            unitInput.value = (Number(totalInput.value) / quantity).toFixed(4);
+        } else if (unitInput.value !== '') {
+            totalInput.value = (Number(unitInput.value) * quantity).toFixed(4);
+            if (sourceInput) sourceInput.value = 'unit';
+        }
+        if (sourceInput && source) sourceInput.value = source;
+        updateReceivedState(row);
+    }
+
+    function fillMedicineDetails(row, selectionChanged = false) {
         const medicineSelect = row.querySelector('select[name$="-medicine"]');
         const reorderInput = row.querySelector('.reorder-level');
         const stockInput = row.querySelector('.current-stock');
         const qtyInput = row.querySelector('input[name$="-quantity_ordered"]');
+        const dosageForm = row.querySelector('.dosage-form-display');
+        const unitCost = row.querySelector('input[name$="-unit_cost"]');
+        const totalCost = row.querySelector('input[name$="-total_cost"]');
 
         if (!medicineSelect) {
             return;
@@ -229,12 +299,25 @@
                     if (row._medicineRequestId !== requestId) return;
                     reorderInput.value = data.reorder_level;
                     stockInput.value = data.current_stock;
-                    qtyInput.value = data.suggested_qty > 0 ? data.suggested_qty : '';
+                    dosageForm.textContent = data.unit;
+                    if (selectionChanged || !qtyInput.value) {
+                        qtyInput.value = data.suggested_qty > 0 ? data.suggested_qty : '';
+                    }
+                    if (selectionChanged || !unitCost.value) {
+                        unitCost.value = data.last_purchase_unit_price;
+                    }
+                    if (selectionChanged || !totalCost.value) {
+                        synchronizeCosts(row, 'unit');
+                    }
                 });
         } else {
             reorderInput.value = '';
             stockInput.value = '';
             qtyInput.value = '';
+            dosageForm.textContent = '';
+            unitCost.value = '';
+            totalCost.value = '';
+            updateReceivedState(row);
         }
     }
 
@@ -245,10 +328,17 @@
         }
 
         medicineSelect.addEventListener('change', function() {
-            fillMedicineDetails(row);
+            fillMedicineDetails(row, true);
         });
 
         fillMedicineDetails(row);
+        const receivedInput = row.querySelector('input[name$="-quantity_received"]');
+        const unitInput = row.querySelector('input[name$="-unit_cost"]');
+        const totalInput = row.querySelector('input[name$="-total_cost"]');
+        receivedInput?.addEventListener('input', () => synchronizeCosts(row, 'unit'));
+        unitInput?.addEventListener('input', () => synchronizeCosts(row, 'unit'));
+        totalInput?.addEventListener('input', () => synchronizeCosts(row, 'total'));
+        updateReceivedState(row);
     }
 
     // Attach to all existing rows on page load
@@ -276,6 +366,7 @@
             newRow.querySelectorAll('select').forEach(select => {
                 select.selectedIndex = 0;
             });
+            updateReceivedState(newRow);
 
             container.appendChild(newRow);
             attachMedicineChangeHandler(newRow);

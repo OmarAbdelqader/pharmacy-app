@@ -410,6 +410,11 @@ def medicine_api(request, pk):
         'reorder_level': medicine.reorder_level,
         'current_stock': medicine.current_stock,
         'suggested_qty': max(0, medicine.reorder_level - medicine.current_stock),
+        'unit': medicine.unit,
+        'last_purchase_unit_price': (
+            str(medicine.last_purchase_unit_price)
+            if medicine.last_purchase_unit_price is not None else ''
+        ),
     })
 
 @login_required_custom
@@ -1701,6 +1706,7 @@ def order_edit(request, pk):
                 'quantity_ordered': item.quantity_ordered,
                 'quantity_received': item.quantity_received,
                 'unit_cost': item.unit_cost,
+                'total_cost': item.total_cost,
                 'batch_number': item.batch_number,
                 'expiry_date': item.expiry_date,
             })
@@ -1737,6 +1743,7 @@ def _save_order_items(order, formset):
         quantity_ordered = cleaned.get('quantity_ordered') or 0
         quantity_received = cleaned.get('quantity_received') or 0
         unit_cost = cleaned.get('unit_cost')
+        total_cost = cleaned.get('total_cost')
         batch_number = cleaned.get('batch_number') or ''
         expiry_date = cleaned.get('expiry_date')
 
@@ -1749,12 +1756,16 @@ def _save_order_items(order, formset):
             quantity_ordered=quantity_ordered,
             quantity_received=quantity_received,
             unit_cost=unit_cost,
+            total_cost=total_cost,
             batch_number=batch_number,
             expiry_date=expiry_date,
         )
-        item.total_cost = item.quantity_received * item.unit_cost if item.quantity_received and item.unit_cost else None
         item._skip_stock_signal = True
         item.save()
+
+        if unit_cost is not None:
+            medicine.last_purchase_unit_price = unit_cost
+            medicine.save(update_fields=['last_purchase_unit_price'])
 
         if order.status == 'Delivered' and quantity_received > 0:
             _create_batch_and_update_stock(item, order)
