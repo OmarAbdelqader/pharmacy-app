@@ -135,7 +135,7 @@
                             {% if batch.quantity_remaining > 0 or batch.pk == item.batch.pk %}
                             <option value="{{ batch.pk }}"
                                 {% if batch.pk == item.batch.pk %}selected{% endif %}>
-                                {{ batch.batch_number }} — ينتهي {{ batch.expiry_date|date:"m/Y" }}
+                                {{ batch.batch_number }} — ينتهي {{ batch.expiry_date|date:"m/y" }}
                             </option>
                             {% endif %}
                             {% endfor %}
@@ -303,7 +303,7 @@ function addItemByCode() {
     function formatExpiryMonthYear(dateString) {
         const parts = dateString.split('-');
         if (parts.length >= 2) {
-            return `${parts[1].padStart(2, '0')}/${parts[0]}`;
+            return `${parts[1].padStart(2, '0')}/${parts[0].slice(-2)}`;
         }
         return dateString;
     }

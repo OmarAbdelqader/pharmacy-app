@@ -195,6 +195,43 @@ class OrderItemSaveTests(TestCase):
         self.assertEqual(admin_user.profile.role, 'admin')
 
 
+class PasswordChangeTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='password-user', password='Old-pass-2026!')
+        self.client.force_login(self.user)
+
+    def test_user_can_change_password_and_remain_signed_in(self):
+        response = self.client.post(reverse('password_change'), {
+            'old_password': 'Old-pass-2026!',
+            'new_password1': 'New-secure-pass-2026!',
+            'new_password2': 'New-secure-pass-2026!',
+        }, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.request['PATH_INFO'], reverse('dashboard'))
+        self.assertTrue(self.client.session.get('_auth_user_id'))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('New-secure-pass-2026!'))
+
+    def test_password_change_requires_current_password(self):
+        response = self.client.post(reverse('password_change'), {
+            'old_password': 'incorrect-current-password',
+            'new_password1': 'New-secure-pass-2026!',
+            'new_password2': 'New-secure-pass-2026!',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Old-pass-2026!'))
+
+    def test_password_change_requires_authentication(self):
+        self.client.logout()
+
+        response = self.client.get(reverse('password_change'))
+
+        self.assertRedirects(response, reverse('login'))
+
+
 class StockMovementReportTests(TestCase):
     def test_report_uses_effective_receive_date_without_per_medicine_queries(self):
         user = User.objects.create_user(username='reporter', password='testpass')
@@ -236,6 +273,11 @@ class StockMovementReportTests(TestCase):
         self.assertEqual(row['purchased'], 7)
         self.assertEqual(row['opening_stock'], 3)
         self.assertEqual(row['closing_stock'], 10)
+        self.assertContains(response, '12/29')
+        self.assertContains(response, 'منطقة غرب الطبية')
+        self.assertContains(response, 'وحدة طب أسرة المتراس')
+        self.assertContains(response, 'صيدلي')
+        self.assertContains(response, 'يعتمد')
 
     def test_report_includes_positive_opening_stock_without_period_activity(self):
         user = User.objects.create_user(username='opening-stock-user', password='testpass')

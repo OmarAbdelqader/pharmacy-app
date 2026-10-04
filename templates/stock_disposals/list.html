@@ -20,7 +20,7 @@
                     <td>{{ disposal.dispensing_date }}</td>
                     <td>{{ disposal.medicine.name }}</td>
                     <td>{{ disposal.batch.batch_number|default:'—' }}</td>
-                    <td>{{ disposal.batch.expiry_date|date:'m/Y' }}</td>
+                    <td>{{ disposal.batch.expiry_date|date:'m/y' }}</td>
                     <td>{{ disposal.quantity }}</td>
                     <td>{{ disposal.created_by|default:'—' }}</td>
                 </tr>

@@ -34,7 +34,7 @@
                 <div class="row g-2 align-items-end">
                     <div class="col-md-3"><label class="form-label small">نوع الحركة</label><select name="item_action[]" class="form-select" required><option value="dispensed" {% if item.action == 'dispensed' %}selected{% endif %}>منصرف</option><option value="waste" {% if item.action == 'waste' %}selected{% endif %}>هادر</option><option value="disposal" {% if item.action == 'disposal' %}selected{% endif %}>إعدام</option></select></div>
                     <div class="col-md-3"><label class="form-label small">اسم التطعيم</label><select name="item_medicine[]" class="form-select medicine-select" required><option value="{{ item.medicine.pk }}">{{ item.medicine.name }}</option>{% for vaccine in vaccines %}{% if vaccine.pk != item.medicine.pk %}<option value="{{ vaccine.pk }}">{{ vaccine.name }}</option>{% endif %}{% endfor %}</select></div>
-                    <div class="col-md-3"><label class="form-label small">التشغيلة والصلاحية</label><select name="item_batch[]" class="form-select batch-select" required><option value="{{ item.batch.pk }}" data-medicine="{{ item.medicine.pk }}" data-opened-doses="0" selected>{{ item.batch.batch_number|default:'بدون رقم' }} — {{ item.batch.expiry_date|date:'m/Y' }}</option>{% for batch in batches %}{% if batch.pk != item.batch.pk %}<option value="{{ batch.pk }}" data-medicine="{{ batch.medicine_id }}" data-opened-doses="{{ batch.opened_doses|default:0 }}">{{ batch.batch_number|default:'بدون رقم' }} — {{ batch.expiry_date|date:'m/Y' }}</option>{% endif %}{% endfor %}</select><div class="form-text opened-dose-summary">الجرعات المتبقية بعد الفتح: 0</div></div>
+                    <div class="col-md-3"><label class="form-label small">التشغيلة والصلاحية</label><select name="item_batch[]" class="form-select batch-select" required><option value="{{ item.batch.pk }}" data-medicine="{{ item.medicine.pk }}" data-opened-doses="0" selected>{{ item.batch.batch_number|default:'بدون رقم' }} — {{ item.batch.expiry_date|date:'m/y' }}</option>{% for batch in batches %}{% if batch.pk != item.batch.pk %}<option value="{{ batch.pk }}" data-medicine="{{ batch.medicine_id }}" data-opened-doses="{{ batch.opened_doses|default:0 }}">{{ batch.batch_number|default:'بدون رقم' }} — {{ batch.expiry_date|date:'m/y' }}</option>{% endif %}{% endfor %}</select><div class="form-text opened-dose-summary">الجرعات المتبقية بعد الفتح: 0</div></div>
                     <div class="col-md-2"><label class="form-label small">عدد الجرعات</label><input type="number" name="item_quantity[]" class="form-control" min="1" value="{{ item.quantity_doses }}" required></div>
                     <div class="col-md-1 text-center"><button type="button" class="btn btn-outline-danger remove-row">×</button></div>
                 </div>
@@ -73,7 +73,7 @@
                     <option value="">اختر التشغيلة</option>
                     {% for batch in batches %}
                     <option value="{{ batch.pk }}" data-medicine="{{ batch.medicine_id }}" data-opened-doses="{{ batch.opened_doses|default:0 }}">
-                        {{ batch.batch_number|default:'بدون رقم' }} — {{ batch.expiry_date|date:'m/Y' }} ({{ batch.quantity_remaining }} فيالة، {{ batch.opened_doses|default:0 }} جرعة مفتوحة)
+                        {{ batch.batch_number|default:'بدون رقم' }} — {{ batch.expiry_date|date:'m/y' }} ({{ batch.quantity_remaining }} فيالة، {{ batch.opened_doses|default:0 }} جرعة مفتوحة)
                     </option>
                     {% endfor %}
                 </select>

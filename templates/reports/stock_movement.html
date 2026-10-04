@@ -2,15 +2,126 @@
 
 {% block title %}تقرير حركة الأصناف{% endblock %}
 
+{% block extra_css %}
+<style>
+    @page {
+        size: A4 landscape;
+        margin: 5mm;
+    }
+
+    .print-only {
+        display: none;
+    }
+
+    @media print {
+        html, body {
+            width: 100%;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+            color: #000 !important;
+        }
+
+        .navbar, .page-header, .filter-panel, .no-print, .alert {
+            display: none !important;
+        }
+
+        .container-fluid {
+            width: auto !important;
+            max-width: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+
+        #movement-print-area {
+            width: 278mm;
+            max-width: none !important;
+            margin-inline: auto;
+            zoom: var(--print-scale, 1);
+        }
+
+        .print-only {
+            display: block !important;
+            font-weight: bold;
+        }
+
+        .print-header {
+            margin-bottom: 2mm;
+            text-align: right;
+            font-size: 11pt;
+            line-height: 1.35;
+        }
+
+        .print-title {
+            margin-bottom: 2mm;
+            text-align: center;
+            font-size: 14pt;
+        }
+
+        .print-footer {
+            display: flex !important;
+            flex-direction: column;
+            gap: 1mm;
+            margin-top: 3mm;
+            font-size: 11pt;
+        }
+
+        .print-footer-approval {
+            text-align: left;
+        }
+
+        .table-container {
+            margin: 0 !important;
+            padding: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+        }
+
+        .table-responsive {
+            overflow: visible !important;
+        }
+
+        .movement-print-table {
+            width: 100%;
+            margin: 0;
+            table-layout: fixed;
+            border-collapse: collapse;
+            font-size: 10pt;
+        }
+
+        .movement-print-table th,
+        .movement-print-table td {
+            padding: 2px 4px !important;
+            border: 1px solid #555 !important;
+            line-height: 1.15;
+            overflow-wrap: anywhere;
+            vertical-align: middle;
+        }
+
+        .movement-print-table tr {
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+
+        .movement-print-table thead {
+            display: table-header-group;
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header d-flex justify-content-between align-items-center">
     <div>
         <h4 class="mb-1">تقرير حركة الأصناف</h4>
         <p class="text-muted mb-0">عرض الفتح، المشتريات، الصرف، والإغلاق حسب الصنف</p>
     </div>
+    <button type="button" class="btn btn-primary no-print" onclick="window.print()">
+        <i class="bi bi-printer me-1"></i> طباعة
+    </button>
 </div>
 
-<div class="table-container mb-3">
+<div class="table-container filter-panel no-print mb-3">
     <form method="get" class="row g-3 align-items-end">
         <div class="col-md-3">
             <label class="form-label text-muted small">من</label>
@@ -37,10 +148,16 @@
     </form>
 </div>
 
-<div class="table-container">
+<div id="movement-print-area">
+    <div class="print-only print-header">
+        <div>منطقة غرب الطبية</div>
+        <div>وحدة طب أسرة المتراس</div>
+    </div>
+    <div class="print-only print-title">تقرير حركة الأصناف</div>
+    <div class="table-container">
     {% if rows %}
     <div class="table-responsive">
-        <table class="table table-hover align-middle">
+        <table class="table table-hover align-middle movement-print-table">
             <thead class="table-light">
                 <tr>
                     <th>نوع الصنف</th>
@@ -70,7 +187,7 @@
                     <td>{{ row.closing_stock }}</td>
                     <td>
                         {% if row.nearest_expiry %}
-                        {{ row.nearest_expiry|date:"Y/m/d" }}
+                        {{ row.nearest_expiry|date:"m/y" }}
                         {% else %}
                         —
                         {% endif %}
@@ -88,5 +205,48 @@
         <p class="text-muted">حاول تغيير نطاق التواريخ أو اختيار فئة أخرى.</p>
     </div>
     {% endif %}
+    </div>
+    <div class="print-only print-footer">
+        <div>صيدلي</div>
+        <div class="print-footer-approval">يعتمد</div>
+    </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const movementReport = document.getElementById('movement-print-area');
+    const pixelsPerMillimeter = 96 / 25.4;
+    const pageWidth = (297 - 10) * pixelsPerMillimeter * 0.99;
+    const pageHeight = (210 - 10) * pixelsPerMillimeter * 0.95;
+
+    window.addEventListener('beforeprint', () => {
+        movementReport.style.zoom = '1';
+        let scale = Math.min(
+            1,
+            pageWidth / movementReport.scrollWidth,
+            pageHeight / movementReport.scrollHeight
+        );
+
+        for (let attempt = 0; attempt < 4; attempt++) {
+            movementReport.style.zoom = String(scale);
+            const bounds = movementReport.getBoundingClientRect();
+            const correction = Math.min(
+                1,
+                pageWidth / (bounds.width * scale),
+                pageHeight / (bounds.height * scale)
+            );
+            if (correction >= 0.999) {
+                break;
+            }
+            scale *= correction;
+        }
+
+        movementReport.style.zoom = String(scale);
+    });
+
+    window.addEventListener('afterprint', () => {
+        movementReport.style.removeProperty('zoom');
+    });
+</script>
 {% endblock %}

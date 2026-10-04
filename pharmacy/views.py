@@ -1,5 +1,6 @@
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
+from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.models import User
 from django.contrib import messages
 from django.contrib.messages import get_messages
@@ -73,6 +74,21 @@ def login_view(request):
 def logout_view(request):
     logout(request)
     return redirect('login')
+
+
+@login_required_custom
+def password_change(request):
+    form = PasswordChangeForm(request.user, request.POST or None)
+    for field in form.fields.values():
+        field.widget.attrs['class'] = 'form-control'
+
+    if request.method == 'POST' and form.is_valid():
+        form.save(request)
+        update_session_auth_hash(request, request.user)
+        messages.success(request, 'تم تغيير كلمة المرور بنجاح.')
+        return redirect('dashboard')
+
+    return render(request, 'users/password_change.html', {'form': form})
 
 
 # ─── DASHBOARD ───────────────────────────────────────────────
